@@ -17,19 +17,25 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
    This is a separate protocol; terminal RESIZE/FOCUS/FACTS kinds are rejected.
 3. `encode`/`decode::<T>` handle a typed `Envelope<T>`, validate its `type`, protocol,
    schema, JSON grammar, counters, duplicate keys and message limits. Body-specific
-   shape checks run for publications, edits, actions, entity creation and URL
-   requests. These functions do not establish freshness, authority or table identity.
+   shape checks run for publications, edits, actions, entity creation/updates,
+   receipt entity states, state projections and URL requests before serialization. These functions do not establish freshness, authority or table identity.
 4. **Use `encode_publish` / `decode_publish` for snapshots.** The latter additionally
    checks the externally supplied `ReceiveContext`, `ValidationTables`,
    `ReceiptFloors`, and `GenerationTracker`. Tables default to empty (deny unknown).
-   Keep generation history until the copy incarnation changes, including across
-   epoch changes. Commit the tracker and displayed publication only after atomic
+   Keep the scalar, copy-wide generation high watermark until the copy incarnation
+   changes, including across epoch changes. Generations are unique across views. Commit the tracker and displayed publication only after atomic
    adoption. Receipt floors advance from terminal receipts, never from OpRejected.
 5. Use `EntityUpdate::validate_against`, `EntityRelease::validate_against`,
    `RowsReply::validate_against` and `AssetReply::validate_against` with the actual
-   prior entity, outstanding request, or manifest. No request identity is inferred
+   prior entity, outstanding request, or manifest. For rows, first construct
+   `RowValidation::new(&adopted_publish, &tables)` and pass it as the third argument.
+   Its immutable borrow resolves row entities, assets, lists and op arguments
+   against the currently adopted copy; authenticate the reply envelope with
+   `ReceiveContext` before checking the outstanding request. No request identity is inferred
    from an ID alone. A missing entity never substitutes for a release tombstone;
    the receiver supplies its validated release ledger to `ReceiptFloors::check`.
+   A tombstone can cover only a missing entity. An exact released incarnation
+   cannot reappear at any revision.
 6. Reserve shared resources with `ResourceLedger` **before** allocation. Keep one
    ledger at each applicable list/copy/host/application scope, shared across all
    connections. `NegotiatedLimits::intersect` only lowers ceilings; the transport
@@ -54,6 +60,10 @@ The design leaves these representations to E-wire:
   Module, Registered, Editor, DockArea, DockContent and inline-token inputs have
   no accepted wire variant. Native object references and executable code never
   cross this boundary.
+- Retained View entities and every ViewSnapshot must agree on the full entity
+  reference, root and generation. `EntityState::View.parent` is an `EntityRef`,
+  and must match the incoming ChildView edge, including kind and incarnation.
+  This also applies to retained views with no node entity binding.
 - `EntityConfig` / `EntityState` are closed tagged unions. OTP supports 1–32
   Unicode scalar values; Calendar supports 1–12 displayed months, years 1–9999
   and valid Gregorian dates. These ranges belong in the consumer's compatibility

@@ -32,8 +32,36 @@ fn wm() -> OpWatermark {
         settled_local_seq: Counter(1),
     }
 }
+fn view_entity(view: &ViewSnapshot, parent: Option<EntityRef>) -> EntityCreate {
+    EntityCreate {
+        r#ref: view.view_ref.clone(),
+        rev: Counter(1),
+        config: EntityConfig::View {},
+        state: EntityState::View {
+            parent,
+            root: view.root,
+            generation: view.generation,
+            props_rev: Counter(1),
+        },
+        subscriptions: Subscriptions {
+            rev: Counter(1),
+            events: vec![],
+        },
+    }
+}
+fn validate_rows(
+    reply: &RowsReply,
+    request: &RowsRequest,
+    manifest: &ListManifest,
+    tables: &ValidationTables,
+) -> Result<()> {
+    let mut publication = publish();
+    publication.list_manifests.push(manifest.clone());
+    let context = RowValidation::new(&publication, tables)?;
+    reply.validate_against(request, manifest, &context)
+}
 fn publish() -> Publish {
-    Publish {
+    let mut p = Publish {
         pub_rev: Counter(1),
         wm: wm(),
         entities_full: vec![],
@@ -48,7 +76,9 @@ fn publish() -> Publish {
         overlays_full: vec![],
         list_manifests: vec![],
         asset_manifests: vec![],
-    }
+    };
+    p.entities_full.push(view_entity(&p.views_full[0], None));
+    p
 }
 fn envelope<T: Payload>(body: T) -> Envelope<T> {
     Envelope::new(
@@ -208,9 +238,7 @@ fn snapshot_and_messages_roundtrip() {
         cancelled: true,
     });
     let (req, reply) = rows();
-    reply
-        .validate_against(&req, &list(), &ValidationTables::default())
-        .unwrap();
+    validate_rows(&reply, &req, &list(), &ValidationTables::default()).unwrap();
     roundtrip(req);
     roundtrip(reply);
     roundtrip(StopAck {
@@ -670,17 +698,17 @@ fn row_identity_cardinality_keys_and_callbacks() {
     let (req, reply) = rows();
     let m = list();
     let tables = ValidationTables::default();
-    reply.validate_against(&req, &m, &tables).unwrap();
+    validate_rows(&reply, &req, &m, &tables).unwrap();
     let mut bad = reply.clone();
     bad.viewport_rev = Counter(2);
     assert_eq!(
-        bad.validate_against(&req, &m, &tables),
+        validate_rows(&bad, &req, &m, &tables),
         Err(Error::Stale("rows request/revision"))
     );
     bad = reply.clone();
     bad.rows.clear();
     assert_eq!(
-        bad.validate_against(&req, &m, &tables),
+        validate_rows(&bad, &req, &m, &tables),
         Err(Error::Invalid("row cardinality"))
     );
     bad = reply.clone();
@@ -689,13 +717,13 @@ fn row_identity_cardinality_keys_and_callbacks() {
         id: Counter(1),
     });
     assert_eq!(
-        bad.validate_against(&req, &m, &tables),
+        validate_rows(&bad, &req, &m, &tables),
         Err(Error::Invalid("row callback"))
     );
     bad = reply.clone();
     bad.rows[0].nodes[0].text = Some("changed".into());
     assert_eq!(
-        bad.validate_against(&req, &m, &tables),
+        validate_rows(&bad, &req, &m, &tables),
         Err(Error::DigestMismatch)
     );
     let mut req = req.clone();
@@ -957,7 +985,7 @@ fn hello_negotiates_only_downward_and_bootstrap_survives_unknown_protocol() {
         Err(Error::Limit("negotiated limit increase"))
     );
     let json = format!(
-        r#"{{"nonce":"{}","protocol":99,"serve":{{"version":"9.0","commit":"abc"}},"future":42}}"#,
+        r#"{{"type":"HelloAck","body":{{"nonce":"{}","protocol":99,"serve":{{"version":"9.0","commit":"abc"}},"future":42}}}}"#,
         id(1).as_str()
     );
     let boot = decode_hello_ack_bootstrap(json.as_bytes()).unwrap();
@@ -1057,7 +1085,7 @@ fn stored_operations_and_callback_count_have_independent_guards() {
 #[test]
 fn entity_aggregate_state_and_lists_have_independent_guards() {
     let mut p = publish();
-    for i in 0..limits::ENTITIES {
+    for i in 0..limits::ENTITIES - 1 {
         let mut e = input();
         e.r#ref.id = Counter(i as u64 + 2);
         e.state = EntityState::Input {
@@ -1087,12 +1115,12 @@ fn duplicate_rows_and_old_content_generation_are_rejected() {
     reply.range.end = 2;
     reply.rows.push(reply.rows[0].clone());
     assert_eq!(
-        reply.validate_against(&req, &m, &ValidationTables::default()),
+        validate_rows(&reply, &req, &m, &ValidationTables::default()),
         Err(Error::Invalid("duplicate row key"))
     );
     reply.content_rev = Counter(0);
     assert_eq!(
-        reply.validate_against(&req, &m, &ValidationTables::default()),
+        validate_rows(&reply, &req, &m, &ValidationTables::default()),
         Err(Error::Stale("rows request/revision"))
     );
 }
@@ -1101,7 +1129,7 @@ fn row_byte_size_limit_and_asset_aggregate_pixel_budget() {
     let (req, mut reply) = rows();
     reply.rows[0].nodes[0].text = Some("x".repeat(limits::ROWS_BYTES));
     assert_eq!(
-        reply.validate_against(&req, &list(), &ValidationTables::default()),
+        validate_rows(&reply, &req, &list(), &ValidationTables::default()),
         Err(Error::Limit("rows bytes"))
     );
     let mut p = publish();
@@ -1136,6 +1164,9 @@ fn child_view_edges_participate_in_cycle_and_depth_checks() {
     let mut p = publish();
     let mut child = p.views_full[0].clone();
     child.view_ref.id = Counter(2);
+    child.generation = Counter(2);
+    p.entities_full
+        .push(view_entity(&child, Some(p.views_full[0].view_ref.clone())));
     p.views_full[0].nodes[0].component = Component::ChildView;
     p.views_full[0].nodes[0].child_view = Some(Counter(2));
     p.views_full.push(child);
@@ -1185,4 +1216,580 @@ fn strict_boolean_and_ids_preserve_background_ack_contract() {
     assert!(serde_json::from_str::<Digest>("\"bad\"").is_err());
     assert!(serde_json::from_str::<True>("false").is_err());
     assert!(serde_json::from_str::<False>("true").is_err());
+}
+
+// Regression cases from the independent appendix-A review.
+fn receive_publish(
+    p: &Publish,
+    floors: &ReceiptFloors,
+    tombstones: &[EntityRelease],
+    generations: &GenerationTracker,
+    tables: &ValidationTables,
+) -> Result<Envelope<Publish>> {
+    let message = envelope(p.clone());
+    let context = ReceiveContext {
+        session: message.session.clone(),
+        scope: message.scope.clone(),
+        owner_fence: message.owner_fence,
+    };
+    decode_publish(
+        &serde_json::to_vec(&message).unwrap(),
+        &PublishValidation {
+            tables,
+            context: &context,
+            floors,
+            generations,
+            tombstones,
+        },
+    )
+}
+fn hello_ack() -> HelloAck {
+    HelloAck {
+        nonce: id(1),
+        protocol: PROTOCOL,
+        serve: ServeVersion {
+            version: "0.1.0".into(),
+            commit: "abc".into(),
+        },
+        boot: id(2),
+        epoch: id(3),
+        limits: NegotiatedLimits::default(),
+        copies: vec![],
+    }
+}
+#[test]
+fn bootstrap_reads_the_encoded_hello_ack_body_in_both_protocol_versions() {
+    let message = envelope(hello_ack());
+    let bytes = encode(&message).unwrap();
+    assert_eq!(decode::<HelloAck>(&bytes).unwrap(), message);
+    let boot = decode_hello_ack_bootstrap(&bytes).unwrap();
+    assert_eq!(boot.nonce, message.body.nonce);
+    assert_eq!(boot.serve, message.body.serve);
+    let mut future = strict_json(&bytes).unwrap();
+    future["v"] = 99.into();
+    future["schema"] = "future".into();
+    future["body"]["protocol"] = 99.into();
+    future["body"]["future"] = true.into();
+    // Incompatibility must not require interpreting the rest of the envelope/body.
+    future["session"] = serde_json::Value::Null;
+    future["body"]["limits"] = serde_json::Value::Null;
+    let bytes = serde_json::to_vec(&future).unwrap();
+    let boot = decode_hello_ack_bootstrap(&bytes).unwrap();
+    assert_eq!(boot.protocol, 99);
+    assert_eq!(boot.nonce, message.body.nonce);
+    assert_eq!(boot.serve, message.body.serve);
+    assert!(decode::<HelloAck>(&bytes).is_err());
+    future["type"] = "Hello".into();
+    assert!(decode_hello_ack_bootstrap(&serde_json::to_vec(&future).unwrap()).is_err());
+}
+#[test]
+fn release_tombstone_cannot_cover_present_or_resurrected_entity() {
+    let e = input();
+    let floors = ReceiptFloors {
+        entities: vec![(e.r#ref.clone(), Counter(2))],
+        ..Default::default()
+    };
+    let release = EntityRelease {
+        r#ref: e.r#ref.clone(),
+        base_rev: Counter(2),
+        rev: Counter(3),
+        reason: "released".into(),
+    };
+    let mut p = publish();
+    let tables = ValidationTables::default();
+    let tracker = GenerationTracker::default();
+    receive_publish(
+        &p,
+        &floors,
+        std::slice::from_ref(&release),
+        &tracker,
+        &tables,
+    )
+    .unwrap();
+    p.entities_full.push(e.clone());
+    assert!(
+        receive_publish(
+            &p,
+            &floors,
+            std::slice::from_ref(&release),
+            &tracker,
+            &tables
+        )
+        .is_err()
+    );
+    p.entities_full.last_mut().unwrap().rev = Counter(4);
+    assert!(
+        receive_publish(
+            &p,
+            &floors,
+            std::slice::from_ref(&release),
+            &tracker,
+            &tables
+        )
+        .is_err()
+    );
+    // A release is final even when no receipt introduced a floor for this entity.
+    assert!(
+        receive_publish(
+            &p,
+            &ReceiptFloors::default(),
+            std::slice::from_ref(&release),
+            &tracker,
+            &tables
+        )
+        .is_err()
+    );
+    p.entities_full.last_mut().unwrap().r#ref.incarnation = id(99);
+    receive_publish(&p, &floors, &[release], &tracker, &tables).unwrap();
+    p.entities_full.last_mut().unwrap().r#ref = e.r#ref;
+    p.entities_full.last_mut().unwrap().rev = Counter(1);
+    assert!(receive_publish(&p, &floors, &[], &tracker, &tables).is_err());
+}
+#[test]
+fn action_callbacks_require_their_own_negotiated_table() {
+    let mut p = publish();
+    p.views_full[0].nodes[0].ops = vec![Op::ActionCallback {
+        name: "command".into(),
+        id: Counter(1),
+    }];
+    let mut tables = ValidationTables::default();
+    let receive = |tables: &ValidationTables| {
+        receive_publish(
+            &p,
+            &ReceiptFloors::default(),
+            &[],
+            &GenerationTracker::default(),
+            tables,
+        )
+    };
+    assert_eq!(receive(&tables), Err(Error::Unknown("op table entry")));
+    tables.callbacks.insert("command".into());
+    assert_eq!(receive(&tables), Err(Error::Unknown("op table entry")));
+    tables.actions.insert("command".into());
+    receive(&tables).unwrap();
+    tables.actions.clear();
+    tables.actions.insert("other".into());
+    assert_eq!(receive(&tables), Err(Error::Unknown("op table entry")));
+}
+#[test]
+fn generations_are_copy_wide_unique_and_history_is_constant_space() {
+    let mut tracker = GenerationTracker::default();
+    let mut p = publish();
+    tracker.commit(&p).unwrap();
+    p.views_full[0].view_ref.id = Counter(999);
+    assert_eq!(
+        tracker.check(&p),
+        Err(Error::Stale("view generation reused"))
+    );
+    for generation in 2..=4096 {
+        p.views_full[0].generation = Counter(generation);
+        p.views_full[0].view_ref.id = Counter(generation);
+        tracker.commit(&p).unwrap();
+    }
+    assert_eq!(tracker.high_watermark(), Counter(4096));
+    assert_eq!(
+        std::mem::size_of_val(&tracker),
+        std::mem::size_of::<Counter>()
+    );
+    let mut p = publish();
+    let mut second = p.views_full[0].clone();
+    second.view_ref.id = Counter(99);
+    p.entities_full.push(view_entity(&second, None));
+    p.views_full.push(second);
+    assert_eq!(
+        p.validate_shape(),
+        Err(Error::Stale("view generation reused"))
+    );
+    assert_eq!(
+        GenerationTracker::default().check(&p),
+        Err(Error::Stale("view generation reused"))
+    );
+    p.views_full[1].generation = Counter(2);
+    p.entities_full[1] = view_entity(&p.views_full[1], None);
+    p.validate_shape().unwrap();
+    // Vector order is not temporal order; each generation must exceed the old high.
+    p.views_full.reverse();
+    let mut fresh = GenerationTracker::default();
+    fresh.commit(&p).unwrap();
+    assert_eq!(fresh.high_watermark(), Counter(2));
+}
+fn rehash(reply: &mut RowsReply) {
+    for row in &mut reply.rows {
+        row.content_hash = canonical_digest(row, "content_hash").unwrap();
+    }
+}
+#[test]
+fn rows_resolve_component_entity_asset_list_and_op_references_in_current_copy() {
+    let (request, mut reply) = rows();
+    let mut p = publish();
+    let tables = ValidationTables {
+        methods: ["bind".into()].into(),
+        ..Default::default()
+    };
+    p.list_manifests.push(list());
+    p.entities_full.push(input());
+    let asset = AssetManifest {
+        id: "icon".into(),
+        digest: digest(),
+        kind: AssetKind::Png,
+        encoded_bytes: 1,
+        decoded_bytes: 4,
+        width: 1,
+        height: 1,
+    };
+    p.asset_manifests.push(asset.clone());
+    let context = RowValidation::new(&p, &tables).unwrap();
+    let m = &p.list_manifests[0];
+    let check = |reply: &mut RowsReply| {
+        rehash(reply);
+        reply.validate_against(&request, m, &context)
+    };
+    check(&mut reply).unwrap();
+    reply.rows[0].nodes[0].component = Component::Input;
+    reply.rows[0].nodes[0].entity = Some(input().r#ref);
+    check(&mut reply).unwrap();
+    reply.rows[0].nodes[0].entity.as_mut().unwrap().id = Counter(999);
+    assert_eq!(check(&mut reply), Err(Error::Invalid("entity reference")));
+    reply.rows[0].nodes[0].entity = Some(input().r#ref);
+    reply.rows[0].nodes[0].entity.as_mut().unwrap().incarnation = id(99);
+    assert_eq!(check(&mut reply), Err(Error::Invalid("entity reference")));
+    reply.rows[0].nodes[0].entity = Some(input().r#ref);
+    reply.rows[0].nodes[0].component = Component::Calendar;
+    assert_eq!(
+        check(&mut reply),
+        Err(Error::Invalid("component entity kind"))
+    );
+    reply.rows[0].nodes[0].entity = None;
+    assert_eq!(
+        check(&mut reply),
+        Err(Error::Invalid("missing component entity"))
+    );
+    reply.rows[0].nodes[0].component = Component::Image;
+    assert_eq!(check(&mut reply), Err(Error::Invalid("missing asset")));
+    reply.rows[0].nodes[0].asset = Some(AssetRef {
+        id: asset.id.clone(),
+        digest: asset.digest.clone(),
+    });
+    check(&mut reply).unwrap();
+    reply.rows[0].nodes[0].asset.as_mut().unwrap().digest = bytes_digest(b"other");
+    assert_eq!(check(&mut reply), Err(Error::Invalid("asset reference")));
+    reply.rows[0].nodes[0] = node();
+    reply.rows[0].nodes[0].component = Component::VirtualList;
+    assert_eq!(
+        check(&mut reply),
+        Err(Error::Invalid("missing list manifest"))
+    );
+    reply.rows[0].nodes[0].list_id = Some("list".into());
+    check(&mut reply).unwrap();
+    reply.rows[0].nodes[0].list_id = Some("other-copy-list".into());
+    assert_eq!(check(&mut reply), Err(Error::Invalid("list reference")));
+    reply.rows[0].nodes[0] = node();
+    reply.rows[0].nodes[0].component = Component::TextView;
+    assert_eq!(check(&mut reply), Err(Error::Invalid("TextView payload")));
+    reply.rows[0].nodes[0] = node();
+    reply.rows[0].nodes[0].ops = vec![Op::Method {
+        name: "bind".into(),
+        args: vec![Argument::Entity(input().r#ref)],
+    }];
+    check(&mut reply).unwrap();
+    if let Op::Method { args, .. } = &mut reply.rows[0].nodes[0].ops[0] {
+        args[0] = Argument::Entity(entity_ref(999, EntityKind::Input));
+    }
+    assert_eq!(
+        check(&mut reply),
+        Err(Error::Invalid("op entity reference"))
+    );
+    let mut other = p.clone();
+    other.list_manifests[0].content_rev = Counter(2);
+    let other_context = RowValidation::new(&other, &tables).unwrap();
+    assert_eq!(
+        reply.validate_against(&request, m, &other_context),
+        Err(Error::Stale("rows publication context"))
+    );
+}
+#[test]
+fn retained_views_validate_unrendered_identity_parent_root_and_generation() {
+    let mut p = publish();
+    p.validate_shape().unwrap();
+    // A retained view is checked even though no node refers to it.
+    let mut orphan = view_entity(&p.views_full[0], None);
+    orphan.r#ref.id = Counter(999);
+    p.entities_full.push(orphan);
+    assert_eq!(
+        p.validate_shape(),
+        Err(Error::Invalid("retained view reference"))
+    );
+    p.entities_full.pop();
+    for root in [1, usize::MAX] {
+        let mut bad = p.clone();
+        if let EntityState::View { root: r, .. } = &mut bad.entities_full[0].state {
+            *r = root;
+        }
+        assert_eq!(
+            bad.validate_shape(),
+            Err(Error::Invalid("retained view root/generation"))
+        );
+    }
+    let mut bad = p.clone();
+    if let EntityState::View { generation, .. } = &mut bad.entities_full[0].state {
+        *generation = Counter(2);
+    }
+    assert_eq!(
+        bad.validate_shape(),
+        Err(Error::Invalid("retained view root/generation"))
+    );
+    for parent in [
+        entity_ref(999, EntityKind::View),
+        entity_ref(1, EntityKind::Input),
+        EntityRef {
+            incarnation: id(99),
+            ..entity_ref(1, EntityKind::View)
+        },
+    ] {
+        let mut bad = p.clone();
+        if let EntityState::View { parent: value, .. } = &mut bad.entities_full[0].state {
+            *value = Some(parent);
+        }
+        assert_eq!(
+            bad.validate_shape(),
+            Err(Error::Invalid("retained view parent"))
+        );
+    }
+    let mut bad = p.clone();
+    bad.entities_full[0].r#ref.incarnation = id(99);
+    assert_eq!(
+        bad.validate_shape(),
+        Err(Error::Invalid("retained view reference"))
+    );
+    let mut child = p.views_full[0].clone();
+    child.view_ref.id = Counter(3);
+    child.generation = Counter(2);
+    p.entities_full
+        .push(view_entity(&child, Some(p.views_full[0].view_ref.clone())));
+    p.views_full.push(child);
+    assert_eq!(
+        p.validate_shape(),
+        Err(Error::Invalid("retained view parent edge"))
+    );
+    p.views_full[0].nodes[0].component = Component::ChildView;
+    p.views_full[0].nodes[0].child_view = Some(Counter(3));
+    p.validate_shape().unwrap();
+}
+fn calendar() -> EntityCreate {
+    let mut e = input();
+    e.r#ref.kind = EntityKind::Calendar;
+    e.config = EntityConfig::Calendar { months: 1 };
+    e.state = EntityState::Calendar {
+        selected: None,
+        year: 2024,
+        month: 2,
+        mode: CalendarMode::Day,
+        today: Date {
+            year: 2024,
+            month: 2,
+            day: 29,
+        },
+    };
+    e
+}
+#[test]
+fn date_picker_and_calendar_both_reference_calendar_entities() {
+    let mut p = publish();
+    p.entities_full.push(calendar());
+    p.views_full[0].nodes[0].entity = Some(calendar().r#ref);
+    for component in [Component::Calendar, Component::DatePicker] {
+        p.views_full[0].nodes[0].component = component;
+        receive_publish(
+            &p,
+            &ReceiptFloors::default(),
+            &[],
+            &GenerationTracker::default(),
+            &ValidationTables::default(),
+        )
+        .unwrap();
+    }
+    p.entities_full[1] = input();
+    p.entities_full[1].r#ref.kind = EntityKind::Focus;
+    p.entities_full[1].config = EntityConfig::Focus {};
+    p.entities_full[1].state = EntityState::Focus {
+        id: "focus".into(),
+        focused: false,
+    };
+    p.views_full[0].nodes[0].entity = Some(p.entities_full[1].r#ref.clone());
+    assert_eq!(
+        p.validate_shape(),
+        Err(Error::Invalid("component entity kind"))
+    );
+}
+#[test]
+fn every_entity_state_string_has_the_entity_ceiling() {
+    for which in 0..4 {
+        let make = |len| {
+            let text = "x".repeat(len);
+            match which {
+                0 => EntityState::Focus {
+                    id: text,
+                    focused: false,
+                },
+                1 => EntityState::VirtualScroll {
+                    offset: Point { x: 0.0, y: 0.0 },
+                    anchor_key: text,
+                    anchor_index: 0,
+                    content_rev: Counter(1),
+                    request: None,
+                },
+                2 => EntityState::VirtualScroll {
+                    offset: Point { x: 0.0, y: 0.0 },
+                    anchor_key: "key".into(),
+                    anchor_index: 0,
+                    content_rev: Counter(1),
+                    request: Some(ScrollRequest { id: text, index: 0 }),
+                },
+                _ => EntityState::Scroll {
+                    offset: Point { x: 0.0, y: 0.0 },
+                    viewport: Size {
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                    content: Size {
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                    request: Some(ScrollRequest { id: text, index: 0 }),
+                },
+            }
+        };
+        make(limits::ENTITY_STRING_BYTES).validate().unwrap();
+        assert_eq!(
+            make(limits::ENTITY_STRING_BYTES + 1).validate(),
+            Err(Error::Limit("entity string"))
+        );
+    }
+}
+fn wire_rejects<T: Payload + std::fmt::Debug>(body: T) {
+    let message = envelope(body);
+    assert!(encode(&message).is_err(), "encode accepted {message:?}");
+    let bytes = serde_json::to_vec(&message).unwrap();
+    assert!(decode::<T>(&bytes).is_err(), "decode accepted {message:?}");
+}
+#[test]
+fn receipts_and_updates_validate_state_kind_and_numbers_before_json() {
+    let state = EntityState::Scroll {
+        offset: Point { x: 0.0, y: 0.0 },
+        viewport: Size {
+            width: -1.0,
+            height: 1.0,
+        },
+        content: Size {
+            width: 1.0,
+            height: 1.0,
+        },
+        request: None,
+    };
+    let result = EntityResult {
+        r#ref: entity_ref(2, EntityKind::Scroll),
+        rev: Counter(2),
+        state,
+    };
+    wire_rejects(HostStateCommit {
+        wm: wm(),
+        affected_entities: vec![result.clone()],
+    });
+    wire_rejects(ActionAck {
+        event_id: "event".into(),
+        op_seq: Counter(2),
+        wm: wm(),
+        affected_entities: vec![result],
+        result: ActionResult::Ok,
+        digest: digest(),
+    });
+    let result = EntityResult {
+        r#ref: entity_ref(2, EntityKind::Calendar),
+        rev: Counter(2),
+        state: input().state,
+    };
+    wire_rejects(HostStateCommit {
+        wm: wm(),
+        affected_entities: vec![result],
+    });
+    wire_rejects(EditConflict {
+        edit_id: "edit".into(),
+        op_seq: Counter(2),
+        wm: wm(),
+        entity: entity_ref(2, EntityKind::Calendar),
+        current_rev: Counter(2),
+        state: input().state,
+        digest: digest(),
+    });
+    let invalid_input = EntityState::Input {
+        text: "🦀".into(),
+        selection: Selection {
+            start: 1,
+            end: 1,
+            direction: Direction::Forward,
+        },
+    };
+    wire_rejects(EditAck {
+        edit_id: "edit".into(),
+        op_seq: Counter(2),
+        wm: wm(),
+        applied_rev: Counter(2),
+        result_rev: Counter(2),
+        state: invalid_input,
+        digest: digest(),
+    });
+    let update = EntityUpdate {
+        r#ref: entity_ref(2, EntityKind::Slider),
+        base_rev: Counter(1),
+        rev: Counter(2),
+        origin: Origin::HostSet,
+        config: EntityConfig::Slider {
+            min: 0.0,
+            max: 1.0,
+            step: 0.1,
+            scale: 1.0,
+            axis: Axis::Horizontal,
+        },
+        state: EntityState::Slider {
+            value: 0.5,
+            end: Some(f64::NAN),
+        },
+        subscriptions: input().subscriptions,
+    };
+    for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut bad = update.clone();
+        bad.state = EntityState::Slider {
+            value: 0.5,
+            end: Some(number),
+        };
+        assert_eq!(
+            encode(&envelope(bad)),
+            Err(Error::Invalid("nonfinite number"))
+        );
+        let result = EntityResult {
+            r#ref: update.r#ref.clone(),
+            rev: Counter(2),
+            state: EntityState::Slider {
+                value: 0.5,
+                end: Some(number),
+            },
+        };
+        assert_eq!(
+            encode(&envelope(HostStateCommit {
+                wm: wm(),
+                affected_entities: vec![result]
+            })),
+            Err(Error::Invalid("nonfinite number"))
+        );
+    }
+    let mut good = update;
+    good.state = EntityState::Slider {
+        value: 0.5,
+        end: Some(1.0),
+    };
+    roundtrip(good.clone());
+    if let EntityConfig::Slider { min, .. } = &mut good.config {
+        *min = 2.0;
+    }
+    wire_rejects(good);
 }

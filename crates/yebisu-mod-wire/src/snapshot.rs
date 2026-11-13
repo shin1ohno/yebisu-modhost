@@ -203,7 +203,7 @@ pub enum EntityState {
         request: Option<ScrollRequest>,
     },
     View {
-        parent: Option<Counter>,
+        parent: Option<EntityRef>,
         root: usize,
         generation: Counter,
         props_rev: Counter,

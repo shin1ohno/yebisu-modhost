@@ -105,6 +105,29 @@ impl Date {
         Ok(())
     }
 }
+fn entity_strings<T: serde::Serialize>(value: &T) -> Result<()> {
+    fn visit(value: &serde_json::Value) -> Result<()> {
+        match value {
+            serde_json::Value::String(s) => {
+                ceiling(s.len(), limits::ENTITY_STRING_BYTES, "entity string")
+            }
+            serde_json::Value::Array(a) => {
+                for v in a {
+                    visit(v)?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Object(o) => {
+                for v in o.values() {
+                    visit(v)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    visit(&serde_json::to_value(value)?)
+}
 impl EntityState {
     pub fn kind(&self) -> EntityKind {
         match self {
@@ -182,7 +205,7 @@ impl EntityState {
             }
             _ => {}
         }
-        Ok(())
+        entity_strings(self)
     }
 }
 impl EntityConfig {
@@ -288,10 +311,24 @@ impl EntityCreate {
             }
             _ => {}
         }
-        Ok(())
+        entity_strings(self)
     }
 }
 impl EntityUpdate {
+    pub fn validate(&self) -> Result<()> {
+        if self.base_rev.0 == 0 || self.base_rev.0.checked_add(1) != Some(self.rev.0) {
+            return Err(Error::Stale("entity update revision"));
+        }
+        EntityCreate {
+            r#ref: self.r#ref.clone(),
+            rev: self.rev,
+            config: self.config.clone(),
+            state: self.state.clone(),
+            subscriptions: self.subscriptions.clone(),
+        }
+        .validate()
+    }
+
     pub fn validate_against(&self, old: &EntityCreate) -> Result<()> {
         if self.r#ref != old.r#ref
             || self.base_rev != old.rev
@@ -318,6 +355,13 @@ impl EntityUpdate {
     }
 }
 impl EntityRelease {
+    pub fn validate(&self) -> Result<()> {
+        if self.base_rev.0 == 0 || self.base_rev.0.checked_add(1) != Some(self.rev.0) {
+            return Err(Error::Stale("entity release revision"));
+        }
+        entity_strings(self)
+    }
+
     pub fn validate_against(&self, old: &EntityCreate) -> Result<()> {
         if self.r#ref != old.r#ref
             || self.base_rev != old.rev
@@ -329,6 +373,63 @@ impl EntityRelease {
     }
 }
 
+impl EntityResult {
+    pub fn validate(&self) -> Result<()> {
+        if self.r#ref.kind != self.state.kind() || self.rev.0 == 0 {
+            return Err(Error::Invalid("entity result kind/revision"));
+        }
+        self.state.validate()
+    }
+}
+fn validate_results(results: &[EntityResult]) -> Result<()> {
+    ceiling(results.len(), limits::ENTITIES, "entities")?;
+    let mut ids = BTreeSet::new();
+    for result in results {
+        result.validate()?;
+        if !ids.insert(result.r#ref.id) {
+            return Err(Error::Invalid("duplicate entity result"));
+        }
+    }
+    Ok(())
+}
+impl HostStateCommit {
+    pub fn validate(&self) -> Result<()> {
+        validate_results(&self.affected_entities)
+    }
+}
+impl ActionAck {
+    pub fn validate(&self) -> Result<()> {
+        validate_results(&self.affected_entities)
+    }
+}
+impl EditAck {
+    pub fn validate(&self) -> Result<()> {
+        if self.applied_rev.0 == 0 || self.result_rev < self.applied_rev {
+            return Err(Error::Invalid("edit receipt revision"));
+        }
+        if !matches!(
+            self.state.kind(),
+            EntityKind::Input | EntityKind::Textarea | EntityKind::Otp
+        ) {
+            return Err(Error::Invalid("edit receipt kind"));
+        }
+        self.state.validate()
+    }
+}
+impl EditConflict {
+    pub fn validate(&self) -> Result<()> {
+        if self.entity.kind != self.state.kind()
+            || !matches!(
+                self.entity.kind,
+                EntityKind::Input | EntityKind::Textarea | EntityKind::Otp
+            )
+            || self.current_rev.0 == 0
+        {
+            return Err(Error::Invalid("edit conflict kind/revision"));
+        }
+        self.state.validate()
+    }
+}
 /// Reflection tables from the exact negotiated gpui-kit version. Empty by
 /// default: unregistered style, method, slot and callback names are rejected.
 #[derive(Debug, Clone, Default)]
@@ -337,6 +438,7 @@ pub struct ValidationTables {
     pub param_styles: BTreeSet<String>,
     pub methods: BTreeSet<String>,
     pub callbacks: BTreeSet<String>,
+    pub actions: BTreeSet<String>,
     pub slots: BTreeSet<String>,
 }
 impl ValidationTables {
@@ -347,7 +449,8 @@ impl ValidationTables {
             Op::Method { name, .. } => self.methods.contains(name),
             Op::Callback { name, .. } => self.callbacks.contains(name),
             Op::Slot { name, .. } => self.slots.contains(name),
-            Op::StateStyle { .. } | Op::ActionCallback { .. } => true,
+            Op::ActionCallback { name, .. } => self.actions.contains(name),
+            Op::StateStyle { .. } => true,
         };
         if known {
             Ok(())
@@ -513,6 +616,84 @@ fn validate_single_tree(
     }
     Ok(())
 }
+fn validate_node_payload(
+    node: &Node,
+    entities: &BTreeMap<Counter, &EntityCreate>,
+    assets: &BTreeMap<&String, &AssetManifest>,
+    lists: &BTreeMap<&String, &ListManifest>,
+) -> Result<()> {
+    if let Some(e) = &node.entity {
+        if entities.get(&e.id).is_none_or(|v| v.r#ref != *e) {
+            return Err(Error::Invalid("entity reference"));
+        }
+        let expected = match node.component {
+            Component::Input | Component::NumberInput => Some(EntityKind::Input),
+            Component::Textarea => Some(EntityKind::Textarea),
+            Component::OtpInput => Some(EntityKind::Otp),
+            Component::Slider
+            | Component::SliderTrack
+            | Component::SliderIndicator
+            | Component::SliderThumb => Some(EntityKind::Slider),
+            Component::Calendar | Component::DatePicker => Some(EntityKind::Calendar),
+            Component::ScrollArea => Some(EntityKind::Scroll),
+            _ => None,
+        };
+        if expected.is_some_and(|k| k != e.kind) {
+            return Err(Error::Invalid("component entity kind"));
+        }
+    } else if matches!(
+        node.component,
+        Component::Input
+            | Component::Textarea
+            | Component::NumberInput
+            | Component::OtpInput
+            | Component::Slider
+            | Component::SliderTrack
+            | Component::SliderIndicator
+            | Component::SliderThumb
+            | Component::Calendar
+            | Component::DatePicker
+            | Component::ScrollArea
+    ) {
+        return Err(Error::Invalid("missing component entity"));
+    }
+    for arg in node.ops.iter().flat_map(arguments) {
+        if let Argument::Entity(e) = arg
+            && entities.get(&e.id).is_none_or(|v| v.r#ref != *e)
+        {
+            return Err(Error::Invalid("op entity reference"));
+        }
+    }
+    if let Some(asset) = &node.asset
+        && assets
+            .get(&asset.id)
+            .is_none_or(|a| a.digest != asset.digest)
+    {
+        return Err(Error::Invalid("asset reference"));
+    }
+    if matches!(
+        node.component,
+        Component::Image | Component::Svg | Component::AvatarImage
+    ) && node.asset.is_none()
+    {
+        return Err(Error::Invalid("missing asset"));
+    }
+    if let Some(id) = &node.list_id
+        && !lists.contains_key(id)
+    {
+        return Err(Error::Invalid("list reference"));
+    }
+    if matches!(node.component, Component::VirtualList | Component::List) && node.list_id.is_none()
+    {
+        return Err(Error::Invalid("missing list manifest"));
+    }
+    if node.component == Component::TextView && (node.text.is_none() || node.text_format.is_none())
+    {
+        return Err(Error::Invalid("TextView payload"));
+    }
+    Ok(())
+}
+
 impl Publish {
     pub fn validate_shape(&self) -> Result<()> {
         ceiling(
@@ -562,6 +743,40 @@ impl Publish {
             count = count.saturating_add(v.nodes.len());
         }
         ceiling(count, limits::NODES, "nodes")?;
+        GenerationTracker::default().check(self)?;
+        for e in &self.entities_full {
+            if let EntityState::View {
+                parent,
+                root,
+                generation,
+                ..
+            } = &e.state
+            {
+                let view = self
+                    .views_full
+                    .iter()
+                    .find(|v| v.view_ref == e.r#ref)
+                    .ok_or(Error::Invalid("retained view reference"))?;
+                if *root != view.root || *generation != view.generation {
+                    return Err(Error::Invalid("retained view root/generation"));
+                }
+                if let Some(parent) = parent
+                    && (parent.kind != EntityKind::View
+                        || entities.get(&parent.id).is_none_or(|e| e.r#ref != *parent)
+                        || self.views_full.iter().all(|v| v.view_ref != *parent))
+                {
+                    return Err(Error::Invalid("retained view parent"));
+                }
+            }
+        }
+        for v in &self.views_full {
+            if entities
+                .get(&v.view_ref.id)
+                .is_none_or(|e| e.r#ref != v.view_ref)
+            {
+                return Err(Error::Invalid("view entity reference"));
+            }
+        }
         let mut graph = Graph {
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -604,78 +819,7 @@ impl Publish {
                     edges.push(*root);
                     child_roots.insert(*root);
                 }
-                if let Some(e) = &node.entity {
-                    if entities.get(&e.id).is_none_or(|v| v.r#ref != *e) {
-                        return Err(Error::Invalid("entity reference"));
-                    }
-                    let expected = match node.component {
-                        Component::Input | Component::NumberInput => Some(EntityKind::Input),
-                        Component::Textarea => Some(EntityKind::Textarea),
-                        Component::OtpInput => Some(EntityKind::Otp),
-                        Component::Slider
-                        | Component::SliderTrack
-                        | Component::SliderIndicator
-                        | Component::SliderThumb => Some(EntityKind::Slider),
-                        Component::Calendar => Some(EntityKind::Calendar),
-                        Component::DatePicker => Some(EntityKind::Focus),
-                        Component::ScrollArea => Some(EntityKind::Scroll),
-                        _ => None,
-                    };
-                    if expected.is_some_and(|k| k != e.kind) {
-                        return Err(Error::Invalid("component entity kind"));
-                    }
-                } else if matches!(
-                    node.component,
-                    Component::Input
-                        | Component::Textarea
-                        | Component::NumberInput
-                        | Component::OtpInput
-                        | Component::Slider
-                        | Component::SliderTrack
-                        | Component::SliderIndicator
-                        | Component::SliderThumb
-                        | Component::Calendar
-                        | Component::DatePicker
-                        | Component::ScrollArea
-                ) {
-                    return Err(Error::Invalid("missing component entity"));
-                }
-                for arg in node.ops.iter().flat_map(arguments) {
-                    if let Argument::Entity(e) = arg
-                        && entities.get(&e.id).is_none_or(|v| v.r#ref != *e)
-                    {
-                        return Err(Error::Invalid("op entity reference"));
-                    }
-                }
-                if let Some(asset) = &node.asset
-                    && assets
-                        .get(&asset.id)
-                        .is_none_or(|a| a.digest != asset.digest)
-                {
-                    return Err(Error::Invalid("asset reference"));
-                }
-                if matches!(
-                    node.component,
-                    Component::Image | Component::Svg | Component::AvatarImage
-                ) && node.asset.is_none()
-                {
-                    return Err(Error::Invalid("missing asset"));
-                }
-                if let Some(id) = &node.list_id
-                    && !lists.contains_key(id)
-                {
-                    return Err(Error::Invalid("list reference"));
-                }
-                if matches!(node.component, Component::VirtualList | Component::List)
-                    && node.list_id.is_none()
-                {
-                    return Err(Error::Invalid("missing list manifest"));
-                }
-                if node.component == Component::TextView
-                    && (node.text.is_none() || node.text_format.is_none())
-                {
-                    return Err(Error::Invalid("TextView payload"));
-                }
+                validate_node_payload(node, &entities, &assets, &lists)?;
                 graph.nodes.push(node);
                 graph.edges.push(edges);
             }
@@ -690,6 +834,20 @@ impl Publish {
             return Err(Error::Invalid("cyclic ChildView roots"));
         }
         graph.validate(true)?;
+        for e in &self.entities_full {
+            if let EntityState::View { parent, .. } = &e.state {
+                let actual: BTreeSet<_> = self
+                    .views_full
+                    .iter()
+                    .filter(|v| v.nodes.iter().any(|n| n.child_view == Some(e.r#ref.id)))
+                    .map(|v| v.view_ref.id)
+                    .collect();
+                let expected: BTreeSet<_> = parent.iter().map(|r| r.id).collect();
+                if actual != expected {
+                    return Err(Error::Invalid("retained view parent edge"));
+                }
+            }
+        }
         for focus in &self.focus_state {
             if focus.entity.kind != EntityKind::Focus
                 || entities
@@ -736,13 +894,52 @@ impl RowsRequest {
         ceiling(self.range.end - self.range.start, limits::ROWS, "row count")
     }
 }
+/// Borrowed immutable state from the currently adopted copy. Construct after
+/// ReceiveContext/floor checks and atomic adoption; never from another copy.
+pub struct RowValidation<'a> {
+    publish: &'a Publish,
+    tables: &'a ValidationTables,
+    entities: BTreeMap<Counter, &'a EntityCreate>,
+    assets: BTreeMap<&'a String, &'a AssetManifest>,
+    lists: BTreeMap<&'a String, &'a ListManifest>,
+}
+impl<'a> RowValidation<'a> {
+    pub fn new(publish: &'a Publish, tables: &'a ValidationTables) -> Result<Self> {
+        publish.validate(tables)?;
+        Ok(Self {
+            publish,
+            tables,
+            entities: publish
+                .entities_full
+                .iter()
+                .map(|e| (e.r#ref.id, e))
+                .collect(),
+            assets: publish.asset_manifests.iter().map(|a| (&a.id, a)).collect(),
+            lists: publish
+                .list_manifests
+                .iter()
+                .map(|m| (&m.list_id, m))
+                .collect(),
+        })
+    }
+}
 impl RowsReply {
     pub fn validate_against(
         &self,
         request: &RowsRequest,
         manifest: &ListManifest,
-        tables: &ValidationTables,
+        context: &RowValidation<'_>,
     ) -> Result<()> {
+        if context.lists.get(&manifest.list_id).copied() != Some(manifest)
+            || request.view_generation != manifest.handler_generation
+            || !context
+                .publish
+                .views_full
+                .iter()
+                .any(|v| v.generation == request.view_generation)
+        {
+            return Err(Error::Stale("rows publication context"));
+        }
         request.validate()?;
         manifest.validate()?;
         if self.request_id != request.request_id
@@ -771,7 +968,10 @@ impl RowsReply {
             if !keys.insert(&row.key) {
                 return Err(Error::Invalid("duplicate row key"));
             }
-            validate_single_tree(&row.nodes, row.root, tables, false)?;
+            validate_single_tree(&row.nodes, row.root, context.tables, false)?;
+            for node in &row.nodes {
+                validate_node_payload(node, &context.entities, &context.assets, &context.lists)?;
+            }
             if canonical_digest(row, "content_hash")? != row.content_hash {
                 return Err(Error::DigestMismatch);
             }
@@ -884,16 +1084,17 @@ impl ReceiveContext {
 /// sequence numbers, but callers must keep these generation floors for the copy.
 #[derive(Debug, Default, Clone)]
 pub struct GenerationTracker {
-    high: BTreeMap<Counter, Counter>,
+    high: Counter,
 }
 impl GenerationTracker {
+    pub fn high_watermark(&self) -> Counter {
+        self.high
+    }
     pub fn check(&self, publish: &Publish) -> Result<()> {
+        ceiling(publish.views_full.len(), limits::NODES, "views")?;
+        let mut seen = BTreeSet::new();
         for v in &publish.views_full {
-            if self
-                .high
-                .get(&v.view_ref.id)
-                .is_some_and(|last| v.generation <= *last)
-            {
+            if v.generation <= self.high || !seen.insert(v.generation) {
                 return Err(Error::Stale("view generation reused"));
             }
         }
@@ -901,9 +1102,12 @@ impl GenerationTracker {
     }
     pub fn commit(&mut self, publish: &Publish) -> Result<()> {
         self.check(publish)?;
-        for v in &publish.views_full {
-            self.high.insert(v.view_ref.id, v.generation);
-        }
+        self.high = publish
+            .views_full
+            .iter()
+            .map(|v| v.generation)
+            .max()
+            .unwrap_or(self.high);
         Ok(())
     }
 }
@@ -937,12 +1141,17 @@ impl ReceiptFloors {
         {
             return Err(Error::Stale("BehindReceipt"));
         }
+        // A release is final for this exact incarnation, even without a receipt floor.
+        for e in &publish.entities_full {
+            if tombstones.iter().any(|release| release.r#ref == e.r#ref) {
+                return Err(Error::Stale("released entity reappeared"));
+            }
+        }
         for (r, rev) in &self.entities {
-            let covered = publish
-                .entities_full
-                .iter()
-                .any(|e| e.r#ref == *r && e.rev >= *rev)
-                || tombstones.iter().any(|e| e.r#ref == *r && e.rev >= *rev);
+            let covered = match publish.entities_full.iter().find(|e| e.r#ref == *r) {
+                Some(e) => e.rev >= *rev,
+                None => tombstones.iter().any(|e| e.r#ref == *r && e.rev >= *rev),
+            };
             if !covered {
                 return Err(Error::Stale("entity receipt floor"));
             }

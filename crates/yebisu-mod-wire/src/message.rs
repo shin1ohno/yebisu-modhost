@@ -622,9 +622,15 @@ impl Payload for EntityCreate {
 }
 impl Payload for EntityUpdate {
     const KIND: MessageKind = MessageKind::EntityUpdate;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for EntityRelease {
     const KIND: MessageKind = MessageKind::EntityRelease;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for FocusAck {
     const KIND: MessageKind = MessageKind::FocusAck;
@@ -673,12 +679,21 @@ impl Payload for Action {
 }
 impl Payload for EditAck {
     const KIND: MessageKind = MessageKind::EditAck;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for ActionAck {
     const KIND: MessageKind = MessageKind::ActionAck;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for EditConflict {
     const KIND: MessageKind = MessageKind::EditConflict;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for OpFailed {
     const KIND: MessageKind = MessageKind::OpFailed;
@@ -697,6 +712,9 @@ impl Payload for ReplayUnknown {
 }
 impl Payload for HostStateCommit {
     const KIND: MessageKind = MessageKind::HostStateCommit;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for LeaseRequest {
     const KIND: MessageKind = MessageKind::LeaseRequest;
@@ -712,6 +730,9 @@ impl Payload for ResumeEdits {
 }
 impl Payload for StateProjection {
     const KIND: MessageKind = MessageKind::StateProjection;
+    fn validate_wire(&self) -> Result<()> {
+        self.window.validate()
+    }
 }
 impl Payload for ResyncRequired {
     const KIND: MessageKind = MessageKind::ResyncRequired;
