@@ -330,6 +330,7 @@ impl EntityUpdate {
     }
 
     pub fn validate_against(&self, old: &EntityCreate) -> Result<()> {
+        self.validate()?;
         if self.r#ref != old.r#ref
             || self.base_rev != old.rev
             || self.base_rev.0.checked_add(1) != Some(self.rev.0)
@@ -363,6 +364,7 @@ impl EntityRelease {
     }
 
     pub fn validate_against(&self, old: &EntityCreate) -> Result<()> {
+        self.validate()?;
         if self.r#ref != old.r#ref
             || self.base_rev != old.rev
             || self.base_rev.0.checked_add(1) != Some(self.rev.0)
@@ -585,12 +587,7 @@ impl Snapshot {
         validate_single_tree(&self.nodes, self.root, tables, true)
     }
 }
-fn validate_single_tree(
-    nodes: &[Node],
-    root: usize,
-    tables: &ValidationTables,
-    callbacks: bool,
-) -> Result<()> {
+fn validate_single_tree_shape(nodes: &[Node], root: usize, callbacks: bool) -> Result<()> {
     let edges = nodes
         .iter()
         .map(|n| local_edges(n, 0, nodes.len()))
@@ -609,6 +606,15 @@ fn validate_single_tree(
         limits::STRINGS_BYTES,
         "aggregate strings",
     )?;
+    Ok(())
+}
+fn validate_single_tree(
+    nodes: &[Node],
+    root: usize,
+    tables: &ValidationTables,
+    callbacks: bool,
+) -> Result<()> {
+    validate_single_tree_shape(nodes, root, callbacks)?;
     for n in nodes {
         for op in &n.ops {
             tables.validate_op(op)?;
@@ -927,6 +933,44 @@ impl<'a> RowValidation<'a> {
     }
 }
 impl RowsReply {
+    /// Context-free checks also run in ordinary encode/decode, before floats can
+    /// be converted to JSON null. References and freshness still need context.
+    pub fn validate_shape(&self) -> Result<()> {
+        let count = self
+            .range
+            .end
+            .checked_sub(self.range.start)
+            .ok_or(Error::Invalid("row range"))?;
+        if self.range.end > limits::LIST_ITEMS {
+            return Err(Error::Invalid("row range"));
+        }
+        ceiling(count, limits::ROWS, "row count")?;
+        if self.rows.len() != count {
+            return Err(Error::Invalid("row cardinality"));
+        }
+        ceiling(
+            serde_json::to_vec(self)?.len(),
+            limits::ROWS_BYTES,
+            "rows bytes",
+        )?;
+        let mut keys = BTreeSet::new();
+        let (mut nodes, mut ops) = (0usize, 0usize);
+        for row in &self.rows {
+            if !keys.insert(&row.key) {
+                return Err(Error::Invalid("duplicate row key"));
+            }
+            validate_single_tree_shape(&row.nodes, row.root, false)?;
+            if canonical_digest(row, "content_hash")? != row.content_hash {
+                return Err(Error::DigestMismatch);
+            }
+            nodes = nodes.saturating_add(row.nodes.len());
+            ops = ops.saturating_add(row.nodes.iter().map(|n| n.ops.len()).sum::<usize>());
+        }
+        ceiling(nodes, limits::NODES, "row aggregate nodes")?;
+        ceiling(ops, limits::STORED_OPS, "row aggregate ops")?;
+        Ok(())
+    }
+
     pub fn validate_against(
         &self,
         request: &RowsRequest,
@@ -957,32 +1001,15 @@ impl RowsReply {
         {
             return Err(Error::Stale("rows request/revision"));
         }
-        if self.rows.len() != self.range.end - self.range.start {
-            return Err(Error::Invalid("row cardinality"));
-        }
-        ceiling(
-            serde_json::to_vec(self)?.len(),
-            limits::ROWS_BYTES,
-            "rows bytes",
-        )?;
-        let mut keys = BTreeSet::new();
-        let (mut nodes, mut ops) = (0usize, 0usize);
+        self.validate_shape()?;
         for row in &self.rows {
-            if !keys.insert(&row.key) {
-                return Err(Error::Invalid("duplicate row key"));
-            }
-            validate_single_tree(&row.nodes, row.root, context.tables, false)?;
             for node in &row.nodes {
                 validate_node_payload(node, &context.entities, &context.assets, &context.lists)?;
+                for op in &node.ops {
+                    context.tables.validate_op(op)?;
+                }
             }
-            if canonical_digest(row, "content_hash")? != row.content_hash {
-                return Err(Error::DigestMismatch);
-            }
-            nodes = nodes.saturating_add(row.nodes.len());
-            ops = ops.saturating_add(row.nodes.iter().map(|n| n.ops.len()).sum::<usize>());
         }
-        ceiling(nodes, limits::NODES, "row aggregate nodes")?;
-        ceiling(ops, limits::STORED_OPS, "row aggregate ops")?;
         Ok(())
     }
 }

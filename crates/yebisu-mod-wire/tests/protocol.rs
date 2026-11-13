@@ -2527,3 +2527,39 @@ fn gateway_target_rejects_stale_boot_copy_or_incarnation() {
         );
     }
 }
+
+#[test]
+fn ordinary_row_codec_checks_numbers_before_context_validation() {
+    let (_, mut reply) = rows();
+    reply.rows[0].nodes[0].ops.push(Op::Method {
+        name: "width".into(),
+        args: vec![Argument::Dimension(1.0)],
+    });
+    rehash(&mut reply);
+    roundtrip(reply.clone());
+    if let Op::Method { args, .. } = &mut reply.rows[0].nodes[0].ops[0] {
+        args[0] = Argument::Dimension(-1.0);
+    }
+    rehash(&mut reply);
+    wire_rejects(reply);
+    let mut action = permission_action();
+    action.data.value = Some(f64::NAN);
+    assert_eq!(
+        encode(&envelope(action)),
+        Err(Error::Invalid("nonfinite number"))
+    );
+    let projection = StateProjection {
+        rev: Counter(1),
+        spaces: vec![],
+        agents: vec![],
+        panes: vec![],
+        focused: None,
+        layout: "layout".into(),
+        window: Size {
+            width: -1.0,
+            height: 1.0,
+        },
+        theme: "dark".into(),
+    };
+    wire_rejects(projection);
+}

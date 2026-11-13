@@ -810,6 +810,9 @@ impl Payload for RowsRequest {
 }
 impl Payload for RowsReply {
     const KIND: MessageKind = MessageKind::RowsReply;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate_shape()
+    }
 }
 impl Payload for AssetRequest {
     const KIND: MessageKind = MessageKind::AssetRequest;
