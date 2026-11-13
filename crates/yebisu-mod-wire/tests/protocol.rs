@@ -1793,3 +1793,344 @@ fn receipts_and_updates_validate_state_kind_and_numbers_before_json() {
     }
     wire_rejects(good);
 }
+
+fn hello() -> Hello {
+    Hello {
+        client: "ipad".into(),
+        nonce: id(1),
+        protocol: PROTOCOL,
+        schema: SCHEMA.into(),
+        digests: Digests {
+            style: digest(),
+            component: digest(),
+            op: digest(),
+            entity: digest(),
+            command: digest(),
+        },
+        features: vec!["entity-v1".into()],
+        limits: NegotiatedLimits::default(),
+    }
+}
+#[test]
+fn handshake_rejects_each_digest_mismatch() {
+    let good = hello();
+    good.validate_compatibility(&good.digests, &good.features)
+        .unwrap();
+    roundtrip(good.clone());
+    for field in 0..5 {
+        let mut expected = good.digests.clone();
+        let different = bytes_digest(b"different-reflection-table");
+        match field {
+            0 => expected.style = different,
+            1 => expected.component = different,
+            2 => expected.op = different,
+            3 => expected.entity = different,
+            _ => expected.command = different,
+        }
+        assert_eq!(
+            good.validate_compatibility(&expected, &good.features),
+            Err(Error::DigestMismatch)
+        );
+    }
+}
+#[test]
+fn handshake_rejects_a_missing_required_feature() {
+    let good = hello();
+    good.validate_compatibility(&good.digests, &good.features)
+        .unwrap();
+    let mut missing = good.clone();
+    missing.features.clear();
+    assert_eq!(
+        missing.validate_compatibility(&good.digests, &good.features),
+        Err(Error::Unknown("required feature"))
+    );
+}
+#[test]
+fn handshake_rejects_an_ack_with_a_different_nonce() {
+    let ack = hello_ack();
+    ack.validate_nonce(&ack.nonce).unwrap();
+    assert_eq!(
+        ack.validate_nonce(&id(99)),
+        Err(Error::Stale("hello nonce"))
+    );
+}
+fn textarea() -> EntityCreate {
+    let mut e = input();
+    e.r#ref.kind = EntityKind::Textarea;
+    e.config = EntityConfig::Textarea {
+        placeholder: String::new(),
+        masked: false,
+        loading: false,
+        readonly: false,
+        rows: 1,
+        min_height: 1.0,
+        max_height: 1.0,
+        wrap: true,
+    };
+    e.state = EntityState::Textarea {
+        text: String::new(),
+        selection: Selection {
+            start: 0,
+            end: 0,
+            direction: Direction::Forward,
+        },
+    };
+    e
+}
+#[test]
+fn input_and_textarea_placeholder_boundaries() {
+    for mut e in [input(), textarea()] {
+        for len in [limits::ENTITY_STRING_BYTES, limits::ENTITY_STRING_BYTES + 1] {
+            match &mut e.config {
+                EntityConfig::Input { placeholder, .. }
+                | EntityConfig::Textarea { placeholder, .. } => *placeholder = "x".repeat(len),
+                _ => unreachable!(),
+            }
+            if len == limits::ENTITY_STRING_BYTES {
+                e.validate().unwrap();
+            } else {
+                assert_eq!(e.validate(), Err(Error::Limit("placeholder")));
+            }
+        }
+    }
+}
+#[test]
+fn calendar_display_month_boundaries() {
+    let mut e = calendar();
+    for months in [1, limits::CALENDAR_MONTHS] {
+        e.config = EntityConfig::Calendar { months };
+        e.validate().unwrap();
+    }
+    for months in [0, limits::CALENDAR_MONTHS + 1] {
+        e.config = EntityConfig::Calendar { months };
+        assert_eq!(e.validate(), Err(Error::Limit("calendar months")));
+    }
+}
+fn otp(digits: usize, text: &str) -> EntityCreate {
+    let mut e = input();
+    e.r#ref.kind = EntityKind::Otp;
+    e.config = EntityConfig::Otp {
+        digits,
+        masked: true,
+    };
+    e.state = EntityState::Otp {
+        text: text.into(),
+        selection: Selection {
+            start: 0,
+            end: 0,
+            direction: Direction::Forward,
+        },
+    };
+    e
+}
+#[test]
+fn otp_digit_count_upper_boundary() {
+    otp(limits::OTP_DIGITS, "").validate().unwrap();
+    assert_eq!(
+        otp(limits::OTP_DIGITS + 1, "").validate(),
+        Err(Error::Limit("OTP digits"))
+    );
+}
+#[test]
+fn otp_text_length_matches_unicode_scalar_digit_count() {
+    otp(limits::OTP_DIGITS, &"🦀".repeat(limits::OTP_DIGITS))
+        .validate()
+        .unwrap();
+    assert_eq!(
+        otp(limits::OTP_DIGITS, &"🦀".repeat(limits::OTP_DIGITS + 1)).validate(),
+        Err(Error::Limit("OTP text"))
+    );
+}
+#[test]
+fn gregorian_date_validity_boundaries() {
+    for date in [
+        Date {
+            year: 2000,
+            month: 2,
+            day: 29,
+        },
+        Date {
+            year: 2024,
+            month: 4,
+            day: 30,
+        },
+        Date {
+            year: 1,
+            month: 1,
+            day: 1,
+        },
+        Date {
+            year: 9999,
+            month: 12,
+            day: 31,
+        },
+    ] {
+        date.validate().unwrap();
+    }
+    for date in [
+        Date {
+            year: 1900,
+            month: 2,
+            day: 29,
+        },
+        Date {
+            year: 2024,
+            month: 4,
+            day: 31,
+        },
+        Date {
+            year: 0,
+            month: 1,
+            day: 1,
+        },
+        Date {
+            year: 10000,
+            month: 1,
+            day: 1,
+        },
+        Date {
+            year: 2024,
+            month: 0,
+            day: 1,
+        },
+        Date {
+            year: 2024,
+            month: 13,
+            day: 1,
+        },
+        Date {
+            year: 2024,
+            month: 1,
+            day: 0,
+        },
+    ] {
+        assert_eq!(date.validate(), Err(Error::Invalid("date")));
+    }
+}
+#[test]
+fn calendar_selected_date_range_order() {
+    let mut e = calendar();
+    let start = Date {
+        year: 2024,
+        month: 2,
+        day: 29,
+    };
+    if let EntityState::Calendar { selected, .. } = &mut e.state {
+        *selected = Some(DateSelection {
+            start: start.clone(),
+            end: Some(start.clone()),
+        });
+    }
+    e.validate().unwrap();
+    if let EntityState::Calendar {
+        selected: Some(selected),
+        ..
+    } = &mut e.state
+    {
+        selected.end = Some(Date {
+            year: 2024,
+            month: 2,
+            day: 28,
+        });
+    }
+    assert_eq!(e.validate(), Err(Error::Invalid("date range")));
+}
+fn slider(value: f64, end: Option<f64>) -> EntityCreate {
+    let mut e = input();
+    e.r#ref.kind = EntityKind::Slider;
+    e.config = EntityConfig::Slider {
+        min: 0.0,
+        max: 1.0,
+        step: 0.1,
+        scale: 1.0,
+        axis: Axis::Horizontal,
+    };
+    e.state = EntityState::Slider { value, end };
+    e
+}
+#[test]
+fn slider_value_and_end_must_stay_inside_configured_range() {
+    for (value, end) in [(0.0, None), (1.0, None), (0.0, Some(1.0))] {
+        slider(value, end).validate().unwrap();
+    }
+    for (value, end) in [
+        (-f64::EPSILON, None),
+        (1.0 + f64::EPSILON, None),
+        (0.0, Some(1.0 + f64::EPSILON)),
+    ] {
+        assert_eq!(
+            slider(value, end).validate(),
+            Err(Error::Invalid("slider value"))
+        );
+    }
+}
+#[test]
+fn slider_range_end_cannot_precede_start() {
+    EntityState::Slider {
+        value: 0.5,
+        end: Some(0.5),
+    }
+    .validate()
+    .unwrap();
+    assert_eq!(
+        EntityState::Slider {
+            value: 0.5,
+            end: Some(0.5 - f64::EPSILON)
+        }
+        .validate(),
+        Err(Error::Invalid("slider range"))
+    );
+}
+#[test]
+fn textarea_requires_at_least_one_row() {
+    let mut e = textarea();
+    e.validate().unwrap();
+    if let EntityConfig::Textarea { rows, .. } = &mut e.config {
+        *rows = 0;
+    }
+    assert_eq!(e.validate(), Err(Error::Invalid("textarea rows")));
+}
+#[test]
+fn textarea_minimum_height_cannot_exceed_maximum() {
+    let mut e = textarea();
+    e.validate().unwrap();
+    if let EntityConfig::Textarea { min_height, .. } = &mut e.config {
+        *min_height = 1.0 + f64::EPSILON;
+    }
+    assert_eq!(e.validate(), Err(Error::Invalid("textarea height")));
+}
+#[test]
+fn rows_content_revision_must_match_current_manifest_independently_of_request() {
+    let (request, reply) = rows();
+    let mut manifest = list();
+    validate_rows(&reply, &request, &manifest, &ValidationTables::default()).unwrap();
+    manifest.content_rev = Counter(2);
+    assert_eq!(
+        validate_rows(&reply, &request, &manifest, &ValidationTables::default()),
+        Err(Error::Stale("rows request/revision"))
+    );
+}
+#[test]
+fn publish_decoded_asset_total_has_an_independent_ceiling() {
+    let mut p = publish();
+    for i in 0..4 {
+        p.asset_manifests.push(AssetManifest {
+            id: i.to_string(),
+            digest: digest(),
+            kind: AssetKind::Png,
+            encoded_bytes: 1,
+            decoded_bytes: limits::ASSET_DECODED_BYTES,
+            width: 1,
+            height: 1,
+        });
+    }
+    p.validate_shape().unwrap();
+    let mut extra = p.asset_manifests[0].clone();
+    extra.id = "extra".into();
+    extra.decoded_bytes = 4;
+    p.asset_manifests.push(extra);
+    assert_eq!(
+        p.validate_shape(),
+        Err(Error::Limit("decoded asset aggregate"))
+    );
+}
