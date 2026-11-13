@@ -18,7 +18,9 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
 3. `encode`/`decode::<T>` handle a typed `Envelope<T>`, validate its `type`, protocol,
    schema, JSON grammar, counters, duplicate keys and message limits. Body-specific
    shape checks run for publications, edits, actions, entity creation/updates,
-   receipt entity states, state projections and URL requests before serialization. These functions do not establish freshness, authority or table identity.
+   receipt entity states, row shapes, state projections and URL requests before
+   serialization. These functions do not establish freshness, authority or table
+   identity.
 4. **Use `encode_publish` / `decode_publish` for snapshots.** The latter additionally
    checks the externally supplied `ReceiveContext`, `ValidationTables`,
    `ReceiptFloors`, and `GenerationTracker`. Tables default to empty (deny unknown).
