@@ -386,9 +386,24 @@ pub struct OpWatermark {
     pub state_rev: Counter,
     pub settled_local_seq: Counter,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayKind {
+    Overlay,
+    Toast,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToastContent {
+    pub message: String,
+    pub mod_name: String,
+    pub host_name: String,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Overlay {
+    pub kind: OverlayKind,
+    pub toast: Option<ToastContent>,
     pub id: String,
     pub parent_pub: Counter,
     pub copy: String,

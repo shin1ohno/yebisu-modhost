@@ -848,6 +848,9 @@ impl Publish {
                 }
             }
         }
+        for overlay in &self.overlays_full {
+            overlay.validate()?;
+        }
         for focus in &self.focus_state {
             if focus.entity.kind != EntityKind::Focus
                 || entities
@@ -1212,6 +1215,21 @@ impl Action {
         if let Some(n) = self.data.value {
             finite(n)?;
         }
+        if !self.data.permissions.is_empty()
+            && !matches!(self.kind, ActionKind::Click | ActionKind::Key)
+        {
+            return Err(Error::Invalid("permission requires individual tap/key"));
+        }
+        let mut permissions = BTreeSet::new();
+        let mut operations = BTreeSet::new();
+        for permission in &self.data.permissions {
+            if permission.policy_rev.0 == 0
+                || !permissions.insert(permission.permission.clone())
+                || !operations.insert(permission.operation)
+            {
+                return Err(Error::Invalid("duplicate/invalid device permission"));
+            }
+        }
         if canonical_digest(self, "digest")? != self.digest {
             return Err(Error::DigestMismatch);
         }
@@ -1306,6 +1324,96 @@ impl ResourceLedger {
             .checked_sub(amount)
             .ok_or(Error::Invalid("resource release underflow"))?;
         self.used.insert(r, next);
+        Ok(())
+    }
+}
+
+impl Overlay {
+    pub fn validate(&self) -> Result<()> {
+        if self.id.is_empty() || self.copy.is_empty() {
+            return Err(Error::Invalid("overlay identity"));
+        }
+        match (self.kind, &self.toast) {
+            (OverlayKind::Overlay, None) => Ok(()),
+            (OverlayKind::Toast, Some(toast))
+                if !toast.message.is_empty()
+                    && !toast.mod_name.is_empty()
+                    && !toast.host_name.is_empty() =>
+            {
+                Ok(())
+            }
+            _ => Err(Error::Invalid("overlay kind/content")),
+        }
+    }
+}
+impl GatewayTarget {
+    /// Compare with an externally authenticated target, never a self-reported identity.
+    pub fn validate_against(&self, expected: &ReceiveContext) -> Result<()> {
+        match &expected.scope {
+            Scope::Copy { id, incarnation }
+                if self.boot == expected.session.boot
+                    && self.copy == *id
+                    && self.incarnation == *incarnation =>
+            {
+                Ok(())
+            }
+            _ => Err(Error::Stale("gateway target")),
+        }
+    }
+}
+impl GatewayRequest {
+    pub fn validate(&self) -> Result<()> {
+        if self.request_id.is_empty() || self.target.copy.is_empty() || self.policy_rev.0 == 0 {
+            return Err(Error::Invalid("gateway identity/policy"));
+        }
+        match &self.operation {
+            GatewayOperation::Run { command, .. } if command.is_empty() => {
+                return Err(Error::Invalid("gateway command"));
+            }
+            GatewayOperation::OpenOverlay { overlay } => overlay.validate()?,
+            GatewayOperation::Notify { overlay } => {
+                overlay.validate()?;
+                if overlay.kind != OverlayKind::Toast {
+                    return Err(Error::Invalid("notify requires toast"));
+                }
+            }
+            GatewayOperation::CloseOverlay { overlay_id } if overlay_id.is_empty() => {
+                return Err(Error::Invalid("gateway overlay"));
+            }
+            GatewayOperation::SetAgentOrder { agents } => {
+                let mut seen = BTreeSet::new();
+                if agents
+                    .iter()
+                    .any(|agent| agent.is_empty() || !seen.insert(agent))
+                {
+                    return Err(Error::Invalid("gateway agent order"));
+                }
+            }
+            _ => {}
+        }
+        ceiling(
+            string_bytes(self)?,
+            limits::STRINGS_BYTES,
+            "aggregate strings",
+        )?;
+        Ok(())
+    }
+}
+impl DeviceRequest {
+    /// Check the explicit hand-off only. The device MUST also check its own
+    /// one-use ledger, current epoch/owner/copy, policy, expiry and cancellation.
+    pub fn validate_permission(&self, action: &Action) -> Result<()> {
+        self.validate()?;
+        action.validate()?;
+        if self.event_id != action.event_id
+            || !action.data.permissions.iter().any(|p| {
+                p.permission == self.permission
+                    && p.operation == self.operation
+                    && p.policy_rev == self.policy_rev
+            })
+        {
+            return Err(Error::Invalid("device permission hand-off"));
+        }
         Ok(())
     }
 }

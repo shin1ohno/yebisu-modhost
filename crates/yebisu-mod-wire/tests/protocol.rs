@@ -2258,3 +2258,272 @@ fn all_appendix_a8_ceilings_can_be_negotiated_and_only_lowered() {
         assert!(encode(&envelope(message)).is_err());
     }
 }
+
+fn permission_action() -> Action {
+    let mut action = Action {
+        op_seq: Counter(2),
+        event_id: "tap-1".into(),
+        after_local_seq: Counter(1),
+        pub_rev: Counter(1),
+        generation: Counter(1),
+        lease_id: "lease".into(),
+        target: 0,
+        kind: ActionKind::Click,
+        data: ActionData {
+            key: None,
+            text: None,
+            point: None,
+            value: None,
+            row_key: None,
+            permissions: vec![
+                DevicePermission {
+                    permission: id(10),
+                    operation: DeviceOperation::ClipboardWrite,
+                    policy_rev: Counter(1),
+                },
+                DevicePermission {
+                    permission: id(11),
+                    operation: DeviceOperation::OpenUrl,
+                    policy_rev: Counter(1),
+                },
+            ],
+        },
+        digest: digest(),
+    };
+    action.digest = canonical_digest(&action, "digest").unwrap();
+    action
+}
+#[test]
+fn device_permission_handoff_is_typed_and_bound_to_the_action_digest() {
+    let action = permission_action();
+    roundtrip(action.clone());
+    let json = strict_json(&encode(&envelope(action.clone())).unwrap()).unwrap();
+    assert_eq!(
+        json["body"]["data"]["permissions"][1]["permission"],
+        id(11).as_str()
+    );
+    assert_eq!(
+        json["body"]["data"]["permissions"][1]["operation"],
+        "open_url"
+    );
+    for permission in &action.data.permissions {
+        let request = DeviceRequest {
+            request_id: "request".into(),
+            permission: permission.permission.clone(),
+            event_id: action.event_id.clone(),
+            operation: permission.operation,
+            policy_rev: permission.policy_rev,
+            value: if permission.operation == DeviceOperation::OpenUrl {
+                "https://example.com/".into()
+            } else {
+                "text".into()
+            },
+        };
+        request.validate_permission(&action).unwrap();
+        roundtrip(request.clone());
+        let mut bad = request.clone();
+        bad.event_id = "different-event".into();
+        assert_eq!(
+            bad.validate_permission(&action),
+            Err(Error::Invalid("device permission hand-off"))
+        );
+        bad = request.clone();
+        bad.permission = id(99);
+        assert_eq!(
+            bad.validate_permission(&action),
+            Err(Error::Invalid("device permission hand-off"))
+        );
+        bad = request.clone();
+        bad.policy_rev = Counter(2);
+        assert_eq!(
+            bad.validate_permission(&action),
+            Err(Error::Invalid("device permission hand-off"))
+        );
+        bad = request;
+        bad.operation = if permission.operation == DeviceOperation::OpenUrl {
+            DeviceOperation::ClipboardWrite
+        } else {
+            DeviceOperation::OpenUrl
+        };
+        bad.value = "https://example.com/".into();
+        assert_eq!(
+            bad.validate_permission(&action),
+            Err(Error::Invalid("device permission hand-off"))
+        );
+    }
+    let mut modified = action.clone();
+    modified.data.permissions[0].permission = id(99);
+    assert_eq!(modified.validate(), Err(Error::DigestMismatch));
+    for kind in [ActionKind::Click, ActionKind::Key] {
+        let mut good = action.clone();
+        good.kind = kind;
+        good.digest = canonical_digest(&good, "digest").unwrap();
+        good.validate().unwrap();
+    }
+    let mut passive = action.clone();
+    passive.kind = ActionKind::PointerMove;
+    passive.digest = canonical_digest(&passive, "digest").unwrap();
+    assert_eq!(
+        passive.validate(),
+        Err(Error::Invalid("permission requires individual tap/key"))
+    );
+    let mut duplicate = action;
+    duplicate
+        .data
+        .permissions
+        .push(duplicate.data.permissions[0].clone());
+    duplicate.digest = canonical_digest(&duplicate, "digest").unwrap();
+    assert_eq!(
+        duplicate.validate(),
+        Err(Error::Invalid("duplicate/invalid device permission"))
+    );
+}
+fn overlay(kind: OverlayKind) -> Overlay {
+    Overlay {
+        kind,
+        toast: (kind == OverlayKind::Toast).then(|| ToastContent {
+            message: "message".into(),
+            mod_name: "mod".into(),
+            host_name: "host".into(),
+        }),
+        id: "overlay".into(),
+        parent_pub: Counter(1),
+        copy: "overlay-child".into(),
+        incarnation: id(6),
+        pub_rev: Counter(1),
+    }
+}
+#[test]
+fn gateway_operations_results_and_toast_discriminator_roundtrip() {
+    let target = GatewayTarget {
+        boot: id(1),
+        copy: "mod".into(),
+        incarnation: id(3),
+    };
+    let operations = [
+        GatewayOperation::Run {
+            command: "focus-pane".into(),
+            args: vec!["pane-1".into()],
+        },
+        GatewayOperation::SetAgentOrder {
+            agents: vec!["agent-1".into(), "agent-2".into()],
+        },
+        GatewayOperation::OpenOverlay {
+            overlay: overlay(OverlayKind::Overlay),
+        },
+        GatewayOperation::CloseOverlay {
+            overlay_id: "overlay".into(),
+        },
+        GatewayOperation::Notify {
+            overlay: overlay(OverlayKind::Toast),
+        },
+    ];
+    let names = [
+        "run",
+        "set_agent_order",
+        "open_overlay",
+        "close_overlay",
+        "notify",
+    ];
+    for (operation, name) in operations.into_iter().zip(names) {
+        let request = GatewayRequest {
+            request_id: "gateway".into(),
+            target: target.clone(),
+            policy_rev: Counter(1),
+            operation,
+        };
+        roundtrip(request.clone());
+        let json = strict_json(&encode(&envelope(request)).unwrap()).unwrap();
+        assert_eq!(json["body"]["operation"]["kind"], name);
+        assert_eq!(json["body"]["target"]["boot"], id(1).as_str());
+        assert_eq!(json["body"]["target"]["incarnation"], id(3).as_str());
+        if name == "notify" {
+            assert_eq!(json["body"]["operation"]["overlay"]["kind"], "toast");
+            assert_eq!(
+                json["body"]["operation"]["overlay"]["toast"]["mod_name"],
+                "mod"
+            );
+            assert_eq!(
+                json["body"]["operation"]["overlay"]["toast"]["host_name"],
+                "host"
+            );
+        }
+    }
+    roundtrip(GatewayReply {
+        request_id: "gateway".into(),
+        result: GatewayResult::Ok,
+    });
+    for reason in [
+        GatewayFailure::NoOperatingConnection,
+        GatewayFailure::StaleTarget,
+        GatewayFailure::PolicyDenied,
+        GatewayFailure::Unsupported,
+        GatewayFailure::InvalidRequest,
+        GatewayFailure::NotOwned,
+        GatewayFailure::RateLimited,
+        GatewayFailure::LimitExceeded,
+        GatewayFailure::Cancelled,
+    ] {
+        roundtrip(GatewayReply {
+            request_id: "gateway".into(),
+            result: GatewayResult::Failed { reason },
+        });
+    }
+    let mut p = publish();
+    p.overlays_full = vec![overlay(OverlayKind::Toast)];
+    roundtrip(p.clone());
+    p.overlays_full[0].toast = None;
+    wire_rejects(p);
+    let mut wrong = GatewayRequest {
+        request_id: "gateway".into(),
+        target,
+        policy_rev: Counter(1),
+        operation: GatewayOperation::Notify {
+            overlay: overlay(OverlayKind::Overlay),
+        },
+    };
+    wire_rejects(wrong.clone());
+    wrong.operation = GatewayOperation::Notify {
+        overlay: overlay(OverlayKind::Toast),
+    };
+    let mut json = serde_json::to_value(envelope(wrong.clone())).unwrap();
+    json["body"]["operation"]["kind"] = "execute-everything".into();
+    assert!(decode::<GatewayRequest>(&serde_json::to_vec(&json).unwrap()).is_err());
+    json = serde_json::to_value(envelope(wrong)).unwrap();
+    json["body"]["operation"]["overlay"]["kind"] = "os_notification".into();
+    assert!(decode::<GatewayRequest>(&serde_json::to_vec(&json).unwrap()).is_err());
+}
+#[test]
+fn gateway_target_rejects_stale_boot_copy_or_incarnation() {
+    let message = envelope(publish());
+    let context = ReceiveContext {
+        session: message.session,
+        scope: message.scope,
+        owner_fence: message.owner_fence,
+    };
+    let target = GatewayTarget {
+        boot: id(1),
+        copy: "mod".into(),
+        incarnation: id(3),
+    };
+    target.validate_against(&context).unwrap();
+    for bad in [
+        GatewayTarget {
+            boot: id(99),
+            ..target.clone()
+        },
+        GatewayTarget {
+            copy: "other-mod".into(),
+            ..target.clone()
+        },
+        GatewayTarget {
+            incarnation: id(99),
+            ..target
+        },
+    ] {
+        assert_eq!(
+            bad.validate_against(&context),
+            Err(Error::Stale("gateway target"))
+        );
+    }
+}

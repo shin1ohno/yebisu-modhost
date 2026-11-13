@@ -103,3 +103,32 @@ this crate includes update as a `StopSource` and carries the exact op ID and
 OS boot ID and continuous-clock fields without asserting any LXC clock identity.
 F3 is the design QA count; six IME scenarios must be retained by the integration
 QA owner. None of these findings is presented here as a measured runtime fix.
+
+
+## Device and command gateways (A12/A13)
+
+The device attaches typed `DevicePermission` values to `ActionData.permissions`
+on individual Click/Key events. Each opaque token binds one operation and Policy
+revision; the Action supplies event_id, and its envelope supplies epoch, copy
+incarnation and owner fence. An async continuation explicitly retains that
+permission and sends its token, event and Policy revision in `DeviceRequest`.
+`validate_permission` checks this hand-off, **not** authorization. The device
+still owns the one-second monotonic-clock ledger, one-use consumption, duplicate
+results and all invalidation/current-connection checks in A12.
+
+`GatewayRequest` carries a request ID, Policy revision, explicit
+`GatewayTarget { boot, copy, incarnation }`, and a tagged operation:
+`run`, `set_agent_order`, `open_overlay`, `close_overlay`, or `notify`.
+`GatewayTarget::validate_against` compares an externally authenticated target.
+The receiving device checks its command allowlist, current target and Policy;
+overlay ownership is inherited from the request envelope and checked against
+the device's overlay registry. It returns `GatewayReply` with `ok` or
+`failed { reason }`; absence of an operating connection is the explicit
+`no_operating_connection` failure, including background execution.
+
+`Overlay.kind` is `overlay` or `toast`. Toasts require
+`ToastContent { message, mod_name, host_name }`; ordinary overlays have
+`toast: null`. Notify accepts only a toast. The renderer enforces one toast
+per second, at most three simultaneous toasts, parent/child publication
+readiness and placement below yebisu confirmation sheets. These are runtime
+obligations, not guarantees provided by serialization.

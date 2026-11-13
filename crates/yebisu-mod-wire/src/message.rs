@@ -216,6 +216,9 @@ pub struct ActionData {
     pub point: Option<Point>,
     pub value: Option<f64>,
     pub row_key: Option<String>,
+    /// Opaque per-event grants issued by the device, explicitly retained by async work.
+    /// Epoch, copy incarnation, owner fence and event ID come from this Action's envelope/body.
+    pub permissions: Vec<DevicePermission>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -640,6 +643,62 @@ pub enum DeviceResult {
     Expired,
     UnsupportedRemoteClipboard,
 }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevicePermission {
+    pub permission: Id128,
+    pub operation: DeviceOperation,
+    pub policy_rev: Counter,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayTarget {
+    pub boot: Id128,
+    pub copy: String,
+    pub incarnation: Id128,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayRequest {
+    pub request_id: String,
+    pub target: GatewayTarget,
+    pub policy_rev: Counter,
+    pub operation: GatewayOperation,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GatewayOperation {
+    Run { command: String, args: Vec<String> },
+    SetAgentOrder { agents: Vec<String> },
+    OpenOverlay { overlay: Overlay },
+    CloseOverlay { overlay_id: String },
+    Notify { overlay: Overlay },
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayReply {
+    pub request_id: String,
+    pub result: GatewayResult,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GatewayResult {
+    Ok,
+    Failed { reason: GatewayFailure },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayFailure {
+    NoOperatingConnection,
+    StaleTarget,
+    PolicyDenied,
+    Unsupported,
+    InvalidRequest,
+    NotOwned,
+    RateLimited,
+    LimitExceeded,
+    Cancelled,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum MessageKind {
     Hello,
@@ -686,6 +745,8 @@ pub enum MessageKind {
     BgGrantVerdict,
     DeviceRequest,
     DeviceReply,
+    GatewayRequest,
+    GatewayReply,
 }
 impl Payload for Hello {
     const KIND: MessageKind = MessageKind::Hello;
@@ -869,4 +930,13 @@ impl Payload for DeviceRequest {
 }
 impl Payload for DeviceReply {
     const KIND: MessageKind = MessageKind::DeviceReply;
+}
+impl Payload for GatewayRequest {
+    const KIND: MessageKind = MessageKind::GatewayRequest;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
+}
+impl Payload for GatewayReply {
+    const KIND: MessageKind = MessageKind::GatewayReply;
 }
