@@ -2134,3 +2134,127 @@ fn publish_decoded_asset_total_has_an_independent_ceiling() {
         Err(Error::Limit("decoded asset aggregate"))
     );
 }
+
+#[test]
+fn all_appendix_a8_ceilings_can_be_negotiated_and_only_lowered() {
+    let expected: serde_json::Value = serde_json::from_str(
+        r#"{
+        "publish_bytes": 1048576,
+        "decompressed_bytes": 4194304,
+        "nodes": 20000,
+        "depth": 256,
+        "visits": 20000,
+        "stored_ops": 160000,
+        "expanded_ops": 160000,
+        "string_bytes": 262144,
+        "strings_bytes": 1048576,
+        "entities": 1024,
+        "entity_string_bytes": 65536,
+        "entity_state_bytes": 1048576,
+        "copies_host": 16,
+        "copies_app": 32,
+        "callback_generations": 3,
+        "callbacks": 10000,
+        "event_queue": 64,
+        "control_bytes": 65536,
+        "control_pending_bytes": 262144,
+        "control_per_second": 64,
+        "receipts": 1024,
+        "receipts_bytes": 1048576,
+        "rows": 200,
+        "rows_bytes": 262144,
+        "list_items": 10000,
+        "lists": 32,
+        "row_requests_list": 2,
+        "row_requests_copy": 8,
+        "row_requests_app": 32,
+        "row_cache_bytes": 8388608,
+        "image_bytes": 4194304,
+        "image_dimension": 4096,
+        "svg_bytes": 524288,
+        "asset_cache_bytes": 16777216,
+        "asset_transfers_copy": 2,
+        "asset_transfers_host": 4,
+        "asset_transfers_app": 8,
+        "asset_decoded_bytes": 16777216,
+        "assets_decoded_bytes": 67108864,
+        "assets_pixels": 16000000,
+        "app_bytes": 134217728,
+        "js_heap_bytes": 67108864,
+        "worker_rss_bytes": 134217728,
+        "workers_rss_bytes": 536870912,
+        "children_copy": 2,
+        "children_host": 8,
+        "background_copies": 4,
+        "js_call_ms": 50,
+        "validate_slice_ms": 10,
+        "materialize_slice_ms": 4,
+        "cpu_copy_ms_per_second": 100,
+        "cpu_runner_ms_per_second": 500,
+        "cpu_ipad_ms_per_second": 250,
+        "hello_timeout_ms": 5000,
+        "publish_timeout_ms": 5000,
+        "op_timeout_ms": 5000,
+        "write_timeout_ms": 5000,
+        "coordinate_abs": 1000000.0
+    }"#,
+    )
+    .unwrap();
+    let default = NegotiatedLimits::default();
+    assert_eq!(serde_json::to_value(&default).unwrap(), expected);
+    roundtrip(hello());
+    roundtrip(hello_ack());
+    for (field, ceiling) in expected.as_object().unwrap() {
+        let max = ceiling.as_f64().unwrap();
+        let mut lower = expected.clone();
+        lower[field] = serde_json::json!(max / 2.0);
+        if field != "coordinate_abs" {
+            lower[field] = serde_json::json!((max as u64 / 2).max(1));
+        }
+        let peer: NegotiatedLimits = serde_json::from_value(lower.clone()).unwrap();
+        peer.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(default.intersect(&peer).unwrap()).unwrap(),
+            lower,
+            "{field}"
+        );
+        assert_eq!(
+            default.intersect(&peer).unwrap(),
+            peer.intersect(&default).unwrap(),
+            "{field}"
+        );
+        for invalid in [0.0, max + 1.0] {
+            let mut bad = expected.clone();
+            bad[field] = if field == "coordinate_abs" {
+                serde_json::json!(invalid)
+            } else {
+                serde_json::json!(invalid as u64)
+            };
+            let bad: NegotiatedLimits = serde_json::from_value(bad).unwrap();
+            assert!(bad.validate().is_err(), "{field}: {invalid}");
+            assert!(default.intersect(&bad).is_err(), "{field}: {invalid}");
+            let mut ack = hello_ack();
+            ack.limits = bad;
+            assert!(
+                encode(&envelope(ack)).is_err(),
+                "HelloAck {field}: {invalid}"
+            );
+        }
+        let mut absent = expected.clone();
+        absent.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<NegotiatedLimits>(absent).is_err(),
+            "missing {field}"
+        );
+    }
+    for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let bad = NegotiatedLimits {
+            coordinate_abs: number,
+            ..Default::default()
+        };
+        assert!(bad.validate().is_err());
+        let mut message = hello();
+        message.limits = bad;
+        assert!(encode(&envelope(message)).is_err());
+    }
+}

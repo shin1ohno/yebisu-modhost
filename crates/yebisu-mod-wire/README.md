@@ -38,7 +38,9 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
    cannot reappear at any revision.
 6. Reserve shared resources with `ResourceLedger` **before** allocation. Keep one
    ledger at each applicable list/copy/host/application scope, shared across all
-   connections. `NegotiatedLimits::intersect` only lowers ceilings; the transport
+   connections. `NegotiatedLimits::intersect` carries every A8 ceiling (including strings, entities, copies, decoded assets,
+   application-wide budgets, timeouts and the coordinate cap) and only lowers
+   them; zero, non-finite and over-ceiling values are rejected. The transport
    and receiver must apply any smaller negotiated values before accepting work.
 
 Graph validation covers ordinary children, slots, state styles and ChildViews

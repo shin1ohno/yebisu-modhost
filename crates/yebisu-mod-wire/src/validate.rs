@@ -1159,66 +1159,6 @@ impl ReceiptFloors {
         Ok(())
     }
 }
-impl NegotiatedLimits {
-    pub fn validate(&self) -> Result<()> {
-        for (value, max) in [
-            (self.publish_bytes, limits::PUBLISH_BYTES),
-            (self.decompressed_bytes, limits::PUBLISH_DECOMPRESSED_BYTES),
-            (self.nodes, limits::NODES),
-            (self.depth, limits::DEPTH),
-            (self.visits, limits::VISITS),
-            (self.stored_ops, limits::STORED_OPS),
-            (self.expanded_ops, limits::EXPANDED_OPS),
-            (self.control_bytes, limits::CONTROL_BYTES),
-            (self.rows, limits::ROWS),
-            (self.rows_bytes, limits::ROWS_BYTES),
-            (self.image_bytes, limits::IMAGE_BYTES),
-            (self.svg_bytes, limits::SVG_BYTES),
-        ] {
-            if value == 0 {
-                return Err(Error::Invalid("zero negotiated limit"));
-            }
-            ceiling(value, max, "negotiated limit increase")?;
-        }
-        Ok(())
-    }
-    pub fn intersect(&self, peer: &Self) -> Result<Self> {
-        self.validate()?;
-        peer.validate()?;
-        Ok(Self {
-            publish_bytes: self.publish_bytes.min(peer.publish_bytes),
-            decompressed_bytes: self.decompressed_bytes.min(peer.decompressed_bytes),
-            nodes: self.nodes.min(peer.nodes),
-            depth: self.depth.min(peer.depth),
-            visits: self.visits.min(peer.visits),
-            stored_ops: self.stored_ops.min(peer.stored_ops),
-            expanded_ops: self.expanded_ops.min(peer.expanded_ops),
-            control_bytes: self.control_bytes.min(peer.control_bytes),
-            rows: self.rows.min(peer.rows),
-            rows_bytes: self.rows_bytes.min(peer.rows_bytes),
-            image_bytes: self.image_bytes.min(peer.image_bytes),
-            svg_bytes: self.svg_bytes.min(peer.svg_bytes),
-        })
-    }
-}
-impl Default for NegotiatedLimits {
-    fn default() -> Self {
-        Self {
-            publish_bytes: limits::PUBLISH_BYTES,
-            decompressed_bytes: limits::PUBLISH_DECOMPRESSED_BYTES,
-            nodes: limits::NODES,
-            depth: limits::DEPTH,
-            visits: limits::VISITS,
-            stored_ops: limits::STORED_OPS,
-            expanded_ops: limits::EXPANDED_OPS,
-            control_bytes: limits::CONTROL_BYTES,
-            rows: limits::ROWS,
-            rows_bytes: limits::ROWS_BYTES,
-            image_bytes: limits::IMAGE_BYTES,
-            svg_bytes: limits::SVG_BYTES,
-        }
-    }
-}
 impl Hello {
     pub fn validate(&self) -> Result<()> {
         if self.protocol != PROTOCOL || self.schema != SCHEMA {
