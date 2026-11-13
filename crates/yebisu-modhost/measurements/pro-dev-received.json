@@ -1,0 +1,101 @@
+[
+  {
+    "file": "git-graph-0001.frames",
+    "scope": {
+      "kind": "copy",
+      "id": "git-graph",
+      "incarnation": "bd6e4862ef60c3f9774a420067cb3516"
+    },
+    "generation": "1",
+    "nodes": 12,
+    "texts": [
+      "Git",
+      "No folder",
+      "Focus a terminal to see the history of the repository it's in."
+    ],
+    "entities": 2,
+    "assets": 1,
+    "compressed_bytes": 1374,
+    "json_bytes": 6680
+  },
+  {
+    "file": "reviewer-0001.frames",
+    "scope": {
+      "kind": "copy",
+      "id": "reviewer",
+      "incarnation": "922fb3d42bb92000a67622c9a47844db"
+    },
+    "generation": "1",
+    "nodes": 25,
+    "texts": [
+      "Changes",
+      "0 files",
+      "+0",
+      "\u22120",
+      "No folder",
+      "changes-diff",
+      "Commit"
+    ],
+    "entities": 4,
+    "assets": 0,
+    "compressed_bytes": 1959,
+    "json_bytes": 12265
+  },
+  {
+    "file": "tabs-0001.frames",
+    "scope": {
+      "kind": "copy",
+      "id": "tabs",
+      "incarnation": "e1157160556f4377190d9f643275d6ca"
+    },
+    "generation": "1",
+    "nodes": 19,
+    "texts": [
+      "Prototype",
+      "+",
+      "Files",
+      "Changes"
+    ],
+    "entities": 2,
+    "assets": 3,
+    "compressed_bytes": 1715,
+    "json_bytes": 10881
+  },
+  {
+    "file": "terminals-bar-0001.frames",
+    "scope": {
+      "kind": "copy",
+      "id": "terminals-bar",
+      "incarnation": "36b52d181bea7a97be9ef3542b25b4fb"
+    },
+    "generation": "1",
+    "nodes": 19,
+    "texts": [
+      "Prototype",
+      "Prototype"
+    ],
+    "entities": 1,
+    "assets": 3,
+    "compressed_bytes": 1660,
+    "json_bytes": 10817
+  },
+  {
+    "file": "workspace-status-0001.frames",
+    "scope": {
+      "kind": "copy",
+      "id": "workspace-status",
+      "incarnation": "2423e3059669d0ed7a50a540c8f6f69b"
+    },
+    "generation": "1",
+    "nodes": 10,
+    "texts": [
+      "This computer",
+      "0 agents",
+      "commands"
+    ],
+    "entities": 1,
+    "assets": 1,
+    "compressed_bytes": 1026,
+    "json_bytes": 4187
+  }
+]

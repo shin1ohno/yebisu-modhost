@@ -1,6 +1,7 @@
 [workspace]
 members = ["crates/yebisu-mod-wire", "crates/yebisu-modhost"]
 resolver = "2"
+exclude = ["vendor/gpui-kit/crates/base", "vendor/gpui-kit/crates/fps", "vendor/gpui-kit/crates/shell", "vendor/gpui-kit/crates/shell/rquickjs-compat", "vendor/gpui-kit", "vendor/gpui-pre", "vendor/gpui-pre-linux", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-apple", "vendor/gpui-pre-macos", "vendor/gpui-pre-windows", "vendor/taffy", "vendor/quickjs-jit-runtime", "vendor/zed-xim", "vendor/xim-ctext"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,3 +14,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 url = "2"
+
+[patch.crates-io]
+gpui-pre = { path = "vendor/gpui-pre" }
+gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
+gpui-pre-apple = { path = "vendor/gpui-pre-apple" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+taffy = { path = "vendor/taffy" }
+zed-xim = { path = "vendor/zed-xim" }
+xim-ctext = { path = "vendor/xim-ctext" }
+rquickjs = { path = "vendor/gpui-kit/crates/shell/rquickjs-compat" }
+
+[patch."https://github.com/longbridge/quickjs-jit"]
+quickjs-jit-runtime = { path = "vendor/quickjs-jit-runtime" }

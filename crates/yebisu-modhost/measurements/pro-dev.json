@@ -1,0 +1,40 @@
+{
+  "classification": "measured prototype; offline synthetic space/tab without repository; not full G1 qualification",
+  "started_utc": "2026-11-13T17:43:00.033991+00:00",
+  "process_model": "one runner process includes shared VM and five native windows; no worker subprocess implementation",
+  "build_profile": "dev, debuginfo=0",
+  "os": "Linux-7.0.14-19-pve-x86_64-with-glibc2.41",
+  "mods": [
+    "workspace-status",
+    "terminals-bar",
+    "tabs",
+    "git-graph",
+    "reviewer"
+  ],
+  "binary_sha256": "5054b65ed4abadfccb0e7b43546a3589fe5c645e8390d2d430ee18b16aceaf71",
+  "window_pixels": [
+    800,
+    600
+  ],
+  "windows": 5,
+  "cpu_definition": "one logical CPU = 100%; process utime+stime / monotonic wall interval",
+  "measurement_window_seconds": [
+    5.009025580016896,
+    64.10590054001659
+  ],
+  "idle_cpu_percent": 0.0169213685271321,
+  "idle_rss_peak_bytes": 99524608,
+  "idle_rss_last_bytes": 99524608,
+  "sample_count": 60,
+  "children_observed": [],
+  "snapshot_samples": 5,
+  "snapshot_compressed_p95_bytes": 1959,
+  "snapshot_compressed_max_bytes": 1959,
+  "compression": "zstd level 3, complete wire envelope",
+  "thresholds": {
+    "rss_bytes": 150000000,
+    "cpu_percent_exclusive": 1,
+    "snapshot_p95_bytes": 65536
+  },
+  "exit_code": 0
+}
