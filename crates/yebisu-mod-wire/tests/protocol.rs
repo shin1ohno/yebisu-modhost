@@ -56,6 +56,7 @@ fn validate_rows(
     tables: &ValidationTables,
 ) -> Result<()> {
     let mut publication = publish();
+    publication.views_full[0].nodes[0] = list_node(&manifest.list_id);
     publication.list_manifests.push(manifest.clone());
     let context = RowValidation::new(&publication, tables)?;
     reply.validate_against(request, manifest, &context)
@@ -1427,6 +1428,7 @@ fn rows_resolve_component_entity_asset_list_and_op_references_in_current_copy() 
         ..Default::default()
     };
     p.list_manifests.push(list());
+    p.views_full[0].nodes[0] = list_node("list");
     p.entities_full.push(input());
     let asset = AssetManifest {
         id: "icon".into(),
@@ -2625,4 +2627,110 @@ fn rows_sum_expanded_visits_across_individually_valid_roots() {
 fn rows_sum_expanded_ops_independently_of_visits() {
     // 4,095 visits and 102,400 ops per row; 8,190 visits and 204,800 ops total.
     assert_row_expansion_budget(12, 50, Error::Limit("expanded ops"));
+}
+
+fn list_node(id: &str) -> Node {
+    Node {
+        component: Component::List,
+        list_id: Some(id.into()),
+        ..node()
+    }
+}
+
+fn two_list_views() -> Publish {
+    let mut p = publish();
+    p.views_full[0].nodes[0] = list_node("list");
+    let mut second = p.views_full[0].clone();
+    second.view_ref.id = Counter(2);
+    second.generation = Counter(2);
+    p.entities_full.push(view_entity(&second, None));
+    p.views_full.push(second);
+    p.list_manifests = vec![
+        list(),
+        ListManifest {
+            handler_generation: Counter(2),
+            ..list()
+        },
+    ];
+    p
+}
+
+#[test]
+fn list_manifest_matches_the_containing_view_generation() {
+    let mut p = two_list_views();
+    p.views_full[1].nodes[0] = node();
+    p.list_manifests.remove(0);
+    // Generation 2 exists but only generation 1 actually renders this list.
+    let expected = Error::Invalid("list reference");
+    assert_eq!(p.validate_shape(), Err(expected.clone()));
+    assert_eq!(encode(&envelope(p.clone())), Err(expected.clone()));
+    let bytes = serde_json::to_vec(&envelope(p.clone())).unwrap();
+    assert_eq!(decode::<Publish>(&bytes), Err(expected.clone()));
+    assert_eq!(
+        RowValidation::new(&p, &ValidationTables::default()).err(),
+        Some(expected)
+    );
+}
+
+#[test]
+fn same_list_id_is_scoped_to_each_view_generation() {
+    let p = two_list_views();
+    let tables = ValidationTables::default();
+    p.validate(&tables).unwrap();
+    roundtrip(p.clone());
+    let context = RowValidation::new(&p, &tables).unwrap();
+    for manifest in &p.list_manifests {
+        let (mut request, mut reply) = rows();
+        request.view_generation = manifest.handler_generation;
+        reply.view_generation = manifest.handler_generation;
+        reply
+            .validate_against(&request, manifest, &context)
+            .unwrap();
+        let other = p.list_manifests.iter().find(|m| *m != manifest).unwrap();
+        assert_eq!(
+            reply.validate_against(&request, other, &context),
+            Err(Error::Stale("rows publication context"))
+        );
+    }
+    let mut duplicate = p.clone();
+    duplicate.list_manifests.push(list());
+    assert_eq!(
+        duplicate.validate_shape(),
+        Err(Error::Invalid("duplicate list"))
+    );
+}
+
+#[test]
+fn rows_require_the_list_in_the_requested_view() {
+    let mut p = publish();
+    p.list_manifests.push(list());
+    let tables = ValidationTables::default();
+    let context = RowValidation::new(&p, &tables).unwrap();
+    let (request, reply) = rows();
+    // An unused manifest and an unrelated view cannot authorize row delivery.
+    assert_eq!(
+        reply.validate_against(&request, &p.list_manifests[0], &context),
+        Err(Error::Stale("rows publication context"))
+    );
+}
+
+#[test]
+fn row_list_references_cannot_use_another_view_generation() {
+    let mut p = two_list_views();
+    p.views_full[1].nodes[0] = list_node("other-list");
+    p.list_manifests[1].list_id = "other-list".into();
+    let tables = ValidationTables::default();
+    let context = RowValidation::new(&p, &tables).unwrap();
+    let (request, mut reply) = rows();
+    reply.rows[0].nodes[0] = list_node("list");
+    rehash(&mut reply);
+    reply
+        .validate_against(&request, &p.list_manifests[0], &context)
+        .unwrap();
+    reply.rows[0].nodes[0].list_id = Some("other-list".into());
+    rehash(&mut reply);
+    assert_eq!(
+        reply.validate_against(&request, &p.list_manifests[0], &context),
+        Err(Error::Invalid("list reference"))
+    );
 }

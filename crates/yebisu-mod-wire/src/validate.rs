@@ -628,9 +628,10 @@ fn validate_single_tree(
 }
 fn validate_node_payload(
     node: &Node,
+    generation: Counter,
     entities: &BTreeMap<Counter, &EntityCreate>,
     assets: &BTreeMap<&String, &AssetManifest>,
-    lists: &BTreeMap<&String, &ListManifest>,
+    lists: &BTreeMap<(Counter, &String), &ListManifest>,
 ) -> Result<()> {
     if let Some(e) = &node.entity {
         if entities.get(&e.id).is_none_or(|v| v.r#ref != *e) {
@@ -689,7 +690,7 @@ fn validate_node_payload(
         return Err(Error::Invalid("missing asset"));
     }
     if let Some(id) = &node.list_id
-        && !lists.contains_key(id)
+        && !lists.contains_key(&(generation, id))
     {
         return Err(Error::Invalid("list reference"));
     }
@@ -796,7 +797,10 @@ impl Publish {
         let mut lists = BTreeMap::new();
         for m in &self.list_manifests {
             m.validate()?;
-            if lists.insert(&m.list_id, m).is_some() {
+            if lists
+                .insert((m.handler_generation, &m.list_id), m)
+                .is_some()
+            {
                 return Err(Error::Invalid("duplicate list"));
             }
         }
@@ -829,7 +833,7 @@ impl Publish {
                     edges.push(*root);
                     child_roots.insert(*root);
                 }
-                validate_node_payload(node, &entities, &assets, &lists)?;
+                validate_node_payload(node, v.generation, &entities, &assets, &lists)?;
                 graph.nodes.push(node);
                 graph.edges.push(edges);
             }
@@ -914,7 +918,7 @@ pub struct RowValidation<'a> {
     tables: &'a ValidationTables,
     entities: BTreeMap<Counter, &'a EntityCreate>,
     assets: BTreeMap<&'a String, &'a AssetManifest>,
-    lists: BTreeMap<&'a String, &'a ListManifest>,
+    lists: BTreeMap<(Counter, &'a String), &'a ListManifest>,
 }
 impl<'a> RowValidation<'a> {
     pub fn new(publish: &'a Publish, tables: &'a ValidationTables) -> Result<Self> {
@@ -931,7 +935,7 @@ impl<'a> RowValidation<'a> {
             lists: publish
                 .list_manifests
                 .iter()
-                .map(|m| (&m.list_id, m))
+                .map(|m| ((m.handler_generation, &m.list_id), m))
                 .collect(),
         })
     }
@@ -986,13 +990,19 @@ impl RowsReply {
         manifest: &ListManifest,
         context: &RowValidation<'_>,
     ) -> Result<()> {
-        if context.lists.get(&manifest.list_id).copied() != Some(manifest)
+        if context
+            .lists
+            .get(&(request.view_generation, &manifest.list_id))
+            .copied()
+            != Some(manifest)
             || request.view_generation != manifest.handler_generation
-            || !context
-                .publish
-                .views_full
-                .iter()
-                .any(|v| v.generation == request.view_generation)
+            || !context.publish.views_full.iter().any(|v| {
+                v.generation == request.view_generation
+                    && v.nodes.iter().any(|node| {
+                        matches!(node.component, Component::List | Component::VirtualList)
+                            && node.list_id.as_ref() == Some(&request.list_id)
+                    })
+            })
         {
             return Err(Error::Stale("rows publication context"));
         }
@@ -1013,7 +1023,13 @@ impl RowsReply {
         self.validate_shape()?;
         for row in &self.rows {
             for node in &row.nodes {
-                validate_node_payload(node, &context.entities, &context.assets, &context.lists)?;
+                validate_node_payload(
+                    node,
+                    request.view_generation,
+                    &context.entities,
+                    &context.assets,
+                    &context.lists,
+                )?;
                 for op in &node.ops {
                     context.tables.validate_op(op)?;
                 }
