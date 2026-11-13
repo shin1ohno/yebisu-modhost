@@ -492,7 +492,7 @@ struct Graph<'a> {
     roots: Vec<usize>,
 }
 impl Graph<'_> {
-    fn validate(&self, allow_callbacks: bool) -> Result<()> {
+    fn validate(&self, allow_callbacks: bool) -> Result<(usize, usize)> {
         ceiling(self.nodes.len(), limits::NODES, "nodes")?;
         let mut stored = 0usize;
         let mut callbacks = 0usize;
@@ -564,7 +564,7 @@ impl Graph<'_> {
         if colors.contains(&0) {
             return Err(Error::Invalid("unreachable node"));
         }
-        Ok(())
+        Ok((visits, ops))
     }
 }
 fn local_edges(node: &Node, offset: usize, count: usize) -> Result<Vec<usize>> {
@@ -587,7 +587,11 @@ impl Snapshot {
         validate_single_tree(&self.nodes, self.root, tables, true)
     }
 }
-fn validate_single_tree_shape(nodes: &[Node], root: usize, callbacks: bool) -> Result<()> {
+fn validate_single_tree_shape(
+    nodes: &[Node],
+    root: usize,
+    callbacks: bool,
+) -> Result<(usize, usize)> {
     let edges = nodes
         .iter()
         .map(|n| local_edges(n, 0, nodes.len()))
@@ -595,7 +599,7 @@ fn validate_single_tree_shape(nodes: &[Node], root: usize, callbacks: bool) -> R
     if nodes.iter().any(|n| n.child_view.is_some()) {
         return Err(Error::Invalid("unresolved child view"));
     }
-    Graph {
+    let cost = Graph {
         nodes: nodes.iter().collect(),
         edges,
         roots: vec![root],
@@ -606,7 +610,7 @@ fn validate_single_tree_shape(nodes: &[Node], root: usize, callbacks: bool) -> R
         limits::STRINGS_BYTES,
         "aggregate strings",
     )?;
-    Ok(())
+    Ok(cost)
 }
 fn validate_single_tree(
     nodes: &[Node],
@@ -955,11 +959,16 @@ impl RowsReply {
         )?;
         let mut keys = BTreeSet::new();
         let (mut nodes, mut ops) = (0usize, 0usize);
+        let (mut visits, mut expanded_ops) = (0usize, 0usize);
         for row in &self.rows {
             if !keys.insert(&row.key) {
                 return Err(Error::Invalid("duplicate row key"));
             }
-            validate_single_tree_shape(&row.nodes, row.root, false)?;
+            let (v, w) = validate_single_tree_shape(&row.nodes, row.root, false)?;
+            visits = visits.saturating_add(v).min(limits::VISITS + 1);
+            expanded_ops = expanded_ops.saturating_add(w).min(limits::EXPANDED_OPS + 1);
+            ceiling(visits, limits::VISITS, "expanded visits")?;
+            ceiling(expanded_ops, limits::EXPANDED_OPS, "expanded ops")?;
             if canonical_digest(row, "content_hash")? != row.content_hash {
                 return Err(Error::DigestMismatch);
             }

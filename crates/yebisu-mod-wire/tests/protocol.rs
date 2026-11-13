@@ -2563,3 +2563,66 @@ fn ordinary_row_codec_checks_numbers_before_context_validation() {
     };
     wire_rejects(projection);
 }
+
+fn repeated_row_reply(depth: usize, leaf_ops: usize) -> (RowsRequest, RowsReply, ListManifest) {
+    let (mut request, mut reply) = rows();
+    let mut manifest = list();
+    request.range.end = 2;
+    reply.range.end = 2;
+    manifest.item_count = 2;
+    let mut nodes = vec![node(); depth];
+    for (i, node) in nodes.iter_mut().enumerate().take(depth - 1) {
+        node.children = vec![i + 1, i + 1];
+    }
+    nodes.last_mut().unwrap().ops = vec![
+        Op::NullaryStyle {
+            index: 1,
+            name: "bold".into(),
+        };
+        leaf_ops
+    ];
+    reply.rows[0].nodes = nodes;
+    reply.rows.push(reply.rows[0].clone());
+    reply.rows[1].key = "row-1".into();
+    rehash(&mut reply);
+    (request, reply, manifest)
+}
+
+fn assert_row_expansion_budget(depth: usize, leaf_ops: usize, expected: Error) {
+    let (request, reply, manifest) = repeated_row_reply(depth, leaf_ops);
+    let tables = ValidationTables {
+        styles: [(1, "bold".into())].into(),
+        ..Default::default()
+    };
+    // Each root is individually valid; only their summed cost exceeds the budget.
+    for row in &reply.rows {
+        let mut single = reply.clone();
+        single.range.end = 1;
+        single.rows = vec![row.clone()];
+        let mut single_request = request.clone();
+        single_request.range.end = 1;
+        single.validate_shape().unwrap();
+        roundtrip(single.clone());
+        validate_rows(&single, &single_request, &manifest, &tables).unwrap();
+    }
+    assert_eq!(reply.validate_shape(), Err(expected.clone()));
+    assert_eq!(encode(&envelope(reply.clone())), Err(expected.clone()));
+    let bytes = serde_json::to_vec(&envelope(reply.clone())).unwrap();
+    assert_eq!(decode::<RowsReply>(&bytes), Err(expected.clone()));
+    assert_eq!(
+        validate_rows(&reply, &request, &manifest, &tables),
+        Err(expected)
+    );
+}
+
+#[test]
+fn rows_sum_expanded_visits_across_individually_valid_roots() {
+    // 16,383 visits per row; 32,766 visits across 28 stored nodes.
+    assert_row_expansion_budget(14, 0, Error::Limit("expanded visits"));
+}
+
+#[test]
+fn rows_sum_expanded_ops_independently_of_visits() {
+    // 4,095 visits and 102,400 ops per row; 8,190 visits and 204,800 ops total.
+    assert_row_expansion_budget(12, 50, Error::Limit("expanded ops"));
+}
