@@ -383,8 +383,13 @@ fn graph_node_depth_cycle_and_unreachable_limits() {
     assert_eq!(p.validate_shape(), Err(Error::Limit("nodes")));
     let mut p = publish();
     p.views_full[0].nodes = vec![node(); limits::DEPTH];
-    for i in 0..limits::DEPTH - 1 {
-        p.views_full[0].nodes[i].children = vec![i + 1];
+    for (i, node) in p.views_full[0]
+        .nodes
+        .iter_mut()
+        .enumerate()
+        .take(limits::DEPTH - 1)
+    {
+        node.children = vec![i + 1];
     }
     p.validate_shape().unwrap();
     p.views_full[0].nodes.push(node());
