@@ -2734,3 +2734,51 @@ fn row_list_references_cannot_use_another_view_generation() {
         Err(Error::Invalid("list reference"))
     );
 }
+
+fn assert_row_child_view_rejected(reply: &mut RowsReply) {
+    rehash(reply);
+    let (request, _) = rows();
+    let expected = Error::Invalid("unresolved child view");
+    assert_eq!(reply.validate_shape(), Err(expected.clone()));
+    assert_eq!(encode(&envelope(reply.clone())), Err(expected.clone()));
+    let bytes = serde_json::to_vec(&envelope(reply.clone())).unwrap();
+    assert_eq!(decode::<RowsReply>(&bytes), Err(expected.clone()));
+    assert_eq!(
+        validate_rows(reply, &request, &list(), &ValidationTables::default()),
+        Err(expected)
+    );
+}
+
+#[test]
+fn rows_reject_child_view_without_payload_in_codec_and_context() {
+    let (_, mut reply) = rows();
+    roundtrip(reply.clone());
+    reply.rows[0].nodes[0].component = Component::ChildView;
+    assert_row_child_view_rejected(&mut reply);
+    reply.rows[0].nodes[0].child_view = Some(Counter(1));
+    assert_row_child_view_rejected(&mut reply);
+    reply.rows[0].nodes[0].component = Component::Div;
+    assert_row_child_view_rejected(&mut reply);
+}
+
+#[test]
+fn rows_reject_child_view_inside_slots_and_state_styles() {
+    for op in [
+        Op::Slot {
+            name: "content".into(),
+            node: 1,
+        },
+        Op::StateStyle {
+            name: StateStyle::Hover,
+            node: 1,
+        },
+    ] {
+        let (_, mut reply) = rows();
+        reply.rows[0].nodes[0].ops.push(op);
+        reply.rows[0].nodes.push(Node {
+            component: Component::ChildView,
+            ..node()
+        });
+        assert_row_child_view_rejected(&mut reply);
+    }
+}

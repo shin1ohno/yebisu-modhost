@@ -53,9 +53,11 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
 
 Graph validation covers ordinary children, slots, state styles and ChildViews
 in one graph. It rejects cycles, unreachable nodes and bad indexes, and counts
-each repeated edge with saturating visit and weighted operation costs. This is
-performed before materialization. Row trees cannot register callbacks or contain
-unresolved ChildViews. Row content hashes include the root, nodes and stable key.
+each repeated edge with saturating visit and weighted operation costs. RowsReply
+sums expanded visits and operations across every row root, even when each row
+individually fits. This is performed before materialization. Row trees cannot
+register callbacks or contain ChildViews, including a ChildView with no child
+payload. Row content hashes include the root, nodes and stable key.
 
 ## Concrete protocol-1 representations
 

@@ -596,7 +596,10 @@ fn validate_single_tree_shape(
         .iter()
         .map(|n| local_edges(n, 0, nodes.len()))
         .collect::<Result<Vec<_>>>()?;
-    if nodes.iter().any(|n| n.child_view.is_some()) {
+    if nodes
+        .iter()
+        .any(|n| n.component == Component::ChildView || n.child_view.is_some())
+    {
         return Err(Error::Invalid("unresolved child view"));
     }
     let cost = Graph {
