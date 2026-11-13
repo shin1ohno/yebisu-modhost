@@ -399,6 +399,9 @@ dependencies = [
 [[package]]
 name = "yebisu-modhost"
 version = "0.1.0"
+dependencies = [
+ "yebisu-mod-wire",
+]
 
 [[package]]
 name = "yoke"
