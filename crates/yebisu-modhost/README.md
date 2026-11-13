@@ -46,12 +46,28 @@ native draw/layout, clears its element arena, and executes the callbacks which
 were pending before the cycle. Newly queued callbacks run on a later cycle.
 When no dirty view/callback remains it waits for the next wake. Native timers
 and asynchronous completions run on GPUI's executor and invalidate their own
-views. The capture observes a new shell generation after native layout.
+views. After native layout the capture checks both the shell generation and
+all previously published retained entity state, config, selection and subscriptions.
+An Input-only host update produces a new publication/state revision without
+requiring its parent to rebuild. Unchanged wakeups do not publish. The single
+root view receives a fresh copy-wide generation on each publication; this offline
+prototype does not retain callback leases for interactive dispatch.
+
+The copied Input selection getter returns UTF-16 positions. The adapter converts
+those positions against the same captured text to wire UTF-8 byte offsets,
+rejecting invalid boundaries. Its wire action table is empty, matching the offline
+host's empty command catalog; named ActionCallback operations are rejected until
+an interactive adapter supplies a negotiated action catalog. The new handshake,
+row validation, permission hand-off, gateway and overlay/toast paths are not used
+by this offline writer and remain production work in TODO.md.
 
 The native headless integration test exercises a real JS timer, `cx.notify`,
 draw and the wire-decoded text from initial state 0 through state 3. It also
 checks a layout callback and rejects a valid frame under a mismatched receiving
-session. A missing mod must fail before starting the application.
+session. Native Input fixtures also verify Japanese/emoji and mixed-accent cursor
+positions and Input-only value/config/selection timer updates received without
+a parent rebuild.
+A missing mod must fail before starting the application.
 
 Each publication writes `.frames` (bounded wire frames carrying zstd-compressed
 wire JSON), `.identity.json` (offline expected receiving context), `.publish.json`

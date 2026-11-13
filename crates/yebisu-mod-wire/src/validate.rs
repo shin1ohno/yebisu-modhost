@@ -105,6 +105,29 @@ impl Date {
         Ok(())
     }
 }
+fn entity_strings<T: serde::Serialize>(value: &T) -> Result<()> {
+    fn visit(value: &serde_json::Value) -> Result<()> {
+        match value {
+            serde_json::Value::String(s) => {
+                ceiling(s.len(), limits::ENTITY_STRING_BYTES, "entity string")
+            }
+            serde_json::Value::Array(a) => {
+                for v in a {
+                    visit(v)?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Object(o) => {
+                for v in o.values() {
+                    visit(v)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    visit(&serde_json::to_value(value)?)
+}
 impl EntityState {
     pub fn kind(&self) -> EntityKind {
         match self {
@@ -182,7 +205,7 @@ impl EntityState {
             }
             _ => {}
         }
-        Ok(())
+        entity_strings(self)
     }
 }
 impl EntityConfig {
@@ -288,11 +311,26 @@ impl EntityCreate {
             }
             _ => {}
         }
-        Ok(())
+        entity_strings(self)
     }
 }
 impl EntityUpdate {
+    pub fn validate(&self) -> Result<()> {
+        if self.base_rev.0 == 0 || self.base_rev.0.checked_add(1) != Some(self.rev.0) {
+            return Err(Error::Stale("entity update revision"));
+        }
+        EntityCreate {
+            r#ref: self.r#ref.clone(),
+            rev: self.rev,
+            config: self.config.clone(),
+            state: self.state.clone(),
+            subscriptions: self.subscriptions.clone(),
+        }
+        .validate()
+    }
+
     pub fn validate_against(&self, old: &EntityCreate) -> Result<()> {
+        self.validate()?;
         if self.r#ref != old.r#ref
             || self.base_rev != old.rev
             || self.base_rev.0.checked_add(1) != Some(self.rev.0)
@@ -318,7 +356,15 @@ impl EntityUpdate {
     }
 }
 impl EntityRelease {
+    pub fn validate(&self) -> Result<()> {
+        if self.base_rev.0 == 0 || self.base_rev.0.checked_add(1) != Some(self.rev.0) {
+            return Err(Error::Stale("entity release revision"));
+        }
+        entity_strings(self)
+    }
+
     pub fn validate_against(&self, old: &EntityCreate) -> Result<()> {
+        self.validate()?;
         if self.r#ref != old.r#ref
             || self.base_rev != old.rev
             || self.base_rev.0.checked_add(1) != Some(self.rev.0)
@@ -329,6 +375,63 @@ impl EntityRelease {
     }
 }
 
+impl EntityResult {
+    pub fn validate(&self) -> Result<()> {
+        if self.r#ref.kind != self.state.kind() || self.rev.0 == 0 {
+            return Err(Error::Invalid("entity result kind/revision"));
+        }
+        self.state.validate()
+    }
+}
+fn validate_results(results: &[EntityResult]) -> Result<()> {
+    ceiling(results.len(), limits::ENTITIES, "entities")?;
+    let mut ids = BTreeSet::new();
+    for result in results {
+        result.validate()?;
+        if !ids.insert(result.r#ref.id) {
+            return Err(Error::Invalid("duplicate entity result"));
+        }
+    }
+    Ok(())
+}
+impl HostStateCommit {
+    pub fn validate(&self) -> Result<()> {
+        validate_results(&self.affected_entities)
+    }
+}
+impl ActionAck {
+    pub fn validate(&self) -> Result<()> {
+        validate_results(&self.affected_entities)
+    }
+}
+impl EditAck {
+    pub fn validate(&self) -> Result<()> {
+        if self.applied_rev.0 == 0 || self.result_rev < self.applied_rev {
+            return Err(Error::Invalid("edit receipt revision"));
+        }
+        if !matches!(
+            self.state.kind(),
+            EntityKind::Input | EntityKind::Textarea | EntityKind::Otp
+        ) {
+            return Err(Error::Invalid("edit receipt kind"));
+        }
+        self.state.validate()
+    }
+}
+impl EditConflict {
+    pub fn validate(&self) -> Result<()> {
+        if self.entity.kind != self.state.kind()
+            || !matches!(
+                self.entity.kind,
+                EntityKind::Input | EntityKind::Textarea | EntityKind::Otp
+            )
+            || self.current_rev.0 == 0
+        {
+            return Err(Error::Invalid("edit conflict kind/revision"));
+        }
+        self.state.validate()
+    }
+}
 /// Reflection tables from the exact negotiated gpui-kit version. Empty by
 /// default: unregistered style, method, slot and callback names are rejected.
 #[derive(Debug, Clone, Default)]
@@ -337,6 +440,7 @@ pub struct ValidationTables {
     pub param_styles: BTreeSet<String>,
     pub methods: BTreeSet<String>,
     pub callbacks: BTreeSet<String>,
+    pub actions: BTreeSet<String>,
     pub slots: BTreeSet<String>,
 }
 impl ValidationTables {
@@ -347,7 +451,8 @@ impl ValidationTables {
             Op::Method { name, .. } => self.methods.contains(name),
             Op::Callback { name, .. } => self.callbacks.contains(name),
             Op::Slot { name, .. } => self.slots.contains(name),
-            Op::StateStyle { .. } | Op::ActionCallback { .. } => true,
+            Op::ActionCallback { name, .. } => self.actions.contains(name),
+            Op::StateStyle { .. } => true,
         };
         if known {
             Ok(())
@@ -482,12 +587,7 @@ impl Snapshot {
         validate_single_tree(&self.nodes, self.root, tables, true)
     }
 }
-fn validate_single_tree(
-    nodes: &[Node],
-    root: usize,
-    tables: &ValidationTables,
-    callbacks: bool,
-) -> Result<()> {
+fn validate_single_tree_shape(nodes: &[Node], root: usize, callbacks: bool) -> Result<()> {
     let edges = nodes
         .iter()
         .map(|n| local_edges(n, 0, nodes.len()))
@@ -506,6 +606,15 @@ fn validate_single_tree(
         limits::STRINGS_BYTES,
         "aggregate strings",
     )?;
+    Ok(())
+}
+fn validate_single_tree(
+    nodes: &[Node],
+    root: usize,
+    tables: &ValidationTables,
+    callbacks: bool,
+) -> Result<()> {
+    validate_single_tree_shape(nodes, root, callbacks)?;
     for n in nodes {
         for op in &n.ops {
             tables.validate_op(op)?;
@@ -513,6 +622,84 @@ fn validate_single_tree(
     }
     Ok(())
 }
+fn validate_node_payload(
+    node: &Node,
+    entities: &BTreeMap<Counter, &EntityCreate>,
+    assets: &BTreeMap<&String, &AssetManifest>,
+    lists: &BTreeMap<&String, &ListManifest>,
+) -> Result<()> {
+    if let Some(e) = &node.entity {
+        if entities.get(&e.id).is_none_or(|v| v.r#ref != *e) {
+            return Err(Error::Invalid("entity reference"));
+        }
+        let expected = match node.component {
+            Component::Input | Component::NumberInput => Some(EntityKind::Input),
+            Component::Textarea => Some(EntityKind::Textarea),
+            Component::OtpInput => Some(EntityKind::Otp),
+            Component::Slider
+            | Component::SliderTrack
+            | Component::SliderIndicator
+            | Component::SliderThumb => Some(EntityKind::Slider),
+            Component::Calendar | Component::DatePicker => Some(EntityKind::Calendar),
+            Component::ScrollArea => Some(EntityKind::Scroll),
+            _ => None,
+        };
+        if expected.is_some_and(|k| k != e.kind) {
+            return Err(Error::Invalid("component entity kind"));
+        }
+    } else if matches!(
+        node.component,
+        Component::Input
+            | Component::Textarea
+            | Component::NumberInput
+            | Component::OtpInput
+            | Component::Slider
+            | Component::SliderTrack
+            | Component::SliderIndicator
+            | Component::SliderThumb
+            | Component::Calendar
+            | Component::DatePicker
+            | Component::ScrollArea
+    ) {
+        return Err(Error::Invalid("missing component entity"));
+    }
+    for arg in node.ops.iter().flat_map(arguments) {
+        if let Argument::Entity(e) = arg
+            && entities.get(&e.id).is_none_or(|v| v.r#ref != *e)
+        {
+            return Err(Error::Invalid("op entity reference"));
+        }
+    }
+    if let Some(asset) = &node.asset
+        && assets
+            .get(&asset.id)
+            .is_none_or(|a| a.digest != asset.digest)
+    {
+        return Err(Error::Invalid("asset reference"));
+    }
+    if matches!(
+        node.component,
+        Component::Image | Component::Svg | Component::AvatarImage
+    ) && node.asset.is_none()
+    {
+        return Err(Error::Invalid("missing asset"));
+    }
+    if let Some(id) = &node.list_id
+        && !lists.contains_key(id)
+    {
+        return Err(Error::Invalid("list reference"));
+    }
+    if matches!(node.component, Component::VirtualList | Component::List) && node.list_id.is_none()
+    {
+        return Err(Error::Invalid("missing list manifest"));
+    }
+    if node.component == Component::TextView && (node.text.is_none() || node.text_format.is_none())
+    {
+        return Err(Error::Invalid("TextView payload"));
+    }
+    Ok(())
+}
+
 impl Publish {
     pub fn validate_shape(&self) -> Result<()> {
         ceiling(
@@ -562,6 +749,40 @@ impl Publish {
             count = count.saturating_add(v.nodes.len());
         }
         ceiling(count, limits::NODES, "nodes")?;
+        GenerationTracker::default().check(self)?;
+        for e in &self.entities_full {
+            if let EntityState::View {
+                parent,
+                root,
+                generation,
+                ..
+            } = &e.state
+            {
+                let view = self
+                    .views_full
+                    .iter()
+                    .find(|v| v.view_ref == e.r#ref)
+                    .ok_or(Error::Invalid("retained view reference"))?;
+                if *root != view.root || *generation != view.generation {
+                    return Err(Error::Invalid("retained view root/generation"));
+                }
+                if let Some(parent) = parent
+                    && (parent.kind != EntityKind::View
+                        || entities.get(&parent.id).is_none_or(|e| e.r#ref != *parent)
+                        || self.views_full.iter().all(|v| v.view_ref != *parent))
+                {
+                    return Err(Error::Invalid("retained view parent"));
+                }
+            }
+        }
+        for v in &self.views_full {
+            if entities
+                .get(&v.view_ref.id)
+                .is_none_or(|e| e.r#ref != v.view_ref)
+            {
+                return Err(Error::Invalid("view entity reference"));
+            }
+        }
         let mut graph = Graph {
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -604,78 +825,7 @@ impl Publish {
                     edges.push(*root);
                     child_roots.insert(*root);
                 }
-                if let Some(e) = &node.entity {
-                    if entities.get(&e.id).is_none_or(|v| v.r#ref != *e) {
-                        return Err(Error::Invalid("entity reference"));
-                    }
-                    let expected = match node.component {
-                        Component::Input | Component::NumberInput => Some(EntityKind::Input),
-                        Component::Textarea => Some(EntityKind::Textarea),
-                        Component::OtpInput => Some(EntityKind::Otp),
-                        Component::Slider
-                        | Component::SliderTrack
-                        | Component::SliderIndicator
-                        | Component::SliderThumb => Some(EntityKind::Slider),
-                        Component::Calendar => Some(EntityKind::Calendar),
-                        Component::DatePicker => Some(EntityKind::Focus),
-                        Component::ScrollArea => Some(EntityKind::Scroll),
-                        _ => None,
-                    };
-                    if expected.is_some_and(|k| k != e.kind) {
-                        return Err(Error::Invalid("component entity kind"));
-                    }
-                } else if matches!(
-                    node.component,
-                    Component::Input
-                        | Component::Textarea
-                        | Component::NumberInput
-                        | Component::OtpInput
-                        | Component::Slider
-                        | Component::SliderTrack
-                        | Component::SliderIndicator
-                        | Component::SliderThumb
-                        | Component::Calendar
-                        | Component::DatePicker
-                        | Component::ScrollArea
-                ) {
-                    return Err(Error::Invalid("missing component entity"));
-                }
-                for arg in node.ops.iter().flat_map(arguments) {
-                    if let Argument::Entity(e) = arg
-                        && entities.get(&e.id).is_none_or(|v| v.r#ref != *e)
-                    {
-                        return Err(Error::Invalid("op entity reference"));
-                    }
-                }
-                if let Some(asset) = &node.asset
-                    && assets
-                        .get(&asset.id)
-                        .is_none_or(|a| a.digest != asset.digest)
-                {
-                    return Err(Error::Invalid("asset reference"));
-                }
-                if matches!(
-                    node.component,
-                    Component::Image | Component::Svg | Component::AvatarImage
-                ) && node.asset.is_none()
-                {
-                    return Err(Error::Invalid("missing asset"));
-                }
-                if let Some(id) = &node.list_id
-                    && !lists.contains_key(id)
-                {
-                    return Err(Error::Invalid("list reference"));
-                }
-                if matches!(node.component, Component::VirtualList | Component::List)
-                    && node.list_id.is_none()
-                {
-                    return Err(Error::Invalid("missing list manifest"));
-                }
-                if node.component == Component::TextView
-                    && (node.text.is_none() || node.text_format.is_none())
-                {
-                    return Err(Error::Invalid("TextView payload"));
-                }
+                validate_node_payload(node, &entities, &assets, &lists)?;
                 graph.nodes.push(node);
                 graph.edges.push(edges);
             }
@@ -690,6 +840,23 @@ impl Publish {
             return Err(Error::Invalid("cyclic ChildView roots"));
         }
         graph.validate(true)?;
+        for e in &self.entities_full {
+            if let EntityState::View { parent, .. } = &e.state {
+                let actual: BTreeSet<_> = self
+                    .views_full
+                    .iter()
+                    .filter(|v| v.nodes.iter().any(|n| n.child_view == Some(e.r#ref.id)))
+                    .map(|v| v.view_ref.id)
+                    .collect();
+                let expected: BTreeSet<_> = parent.iter().map(|r| r.id).collect();
+                if actual != expected {
+                    return Err(Error::Invalid("retained view parent edge"));
+                }
+            }
+        }
+        for overlay in &self.overlays_full {
+            overlay.validate()?;
+        }
         for focus in &self.focus_state {
             if focus.entity.kind != EntityKind::Focus
                 || entities
@@ -736,13 +903,90 @@ impl RowsRequest {
         ceiling(self.range.end - self.range.start, limits::ROWS, "row count")
     }
 }
+/// Borrowed immutable state from the currently adopted copy. Construct after
+/// ReceiveContext/floor checks and atomic adoption; never from another copy.
+pub struct RowValidation<'a> {
+    publish: &'a Publish,
+    tables: &'a ValidationTables,
+    entities: BTreeMap<Counter, &'a EntityCreate>,
+    assets: BTreeMap<&'a String, &'a AssetManifest>,
+    lists: BTreeMap<&'a String, &'a ListManifest>,
+}
+impl<'a> RowValidation<'a> {
+    pub fn new(publish: &'a Publish, tables: &'a ValidationTables) -> Result<Self> {
+        publish.validate(tables)?;
+        Ok(Self {
+            publish,
+            tables,
+            entities: publish
+                .entities_full
+                .iter()
+                .map(|e| (e.r#ref.id, e))
+                .collect(),
+            assets: publish.asset_manifests.iter().map(|a| (&a.id, a)).collect(),
+            lists: publish
+                .list_manifests
+                .iter()
+                .map(|m| (&m.list_id, m))
+                .collect(),
+        })
+    }
+}
 impl RowsReply {
+    /// Context-free checks also run in ordinary encode/decode, before floats can
+    /// be converted to JSON null. References and freshness still need context.
+    pub fn validate_shape(&self) -> Result<()> {
+        let count = self
+            .range
+            .end
+            .checked_sub(self.range.start)
+            .ok_or(Error::Invalid("row range"))?;
+        if self.range.end > limits::LIST_ITEMS {
+            return Err(Error::Invalid("row range"));
+        }
+        ceiling(count, limits::ROWS, "row count")?;
+        if self.rows.len() != count {
+            return Err(Error::Invalid("row cardinality"));
+        }
+        ceiling(
+            serde_json::to_vec(self)?.len(),
+            limits::ROWS_BYTES,
+            "rows bytes",
+        )?;
+        let mut keys = BTreeSet::new();
+        let (mut nodes, mut ops) = (0usize, 0usize);
+        for row in &self.rows {
+            if !keys.insert(&row.key) {
+                return Err(Error::Invalid("duplicate row key"));
+            }
+            validate_single_tree_shape(&row.nodes, row.root, false)?;
+            if canonical_digest(row, "content_hash")? != row.content_hash {
+                return Err(Error::DigestMismatch);
+            }
+            nodes = nodes.saturating_add(row.nodes.len());
+            ops = ops.saturating_add(row.nodes.iter().map(|n| n.ops.len()).sum::<usize>());
+        }
+        ceiling(nodes, limits::NODES, "row aggregate nodes")?;
+        ceiling(ops, limits::STORED_OPS, "row aggregate ops")?;
+        Ok(())
+    }
+
     pub fn validate_against(
         &self,
         request: &RowsRequest,
         manifest: &ListManifest,
-        tables: &ValidationTables,
+        context: &RowValidation<'_>,
     ) -> Result<()> {
+        if context.lists.get(&manifest.list_id).copied() != Some(manifest)
+            || request.view_generation != manifest.handler_generation
+            || !context
+                .publish
+                .views_full
+                .iter()
+                .any(|v| v.generation == request.view_generation)
+        {
+            return Err(Error::Stale("rows publication context"));
+        }
         request.validate()?;
         manifest.validate()?;
         if self.request_id != request.request_id
@@ -757,29 +1001,15 @@ impl RowsReply {
         {
             return Err(Error::Stale("rows request/revision"));
         }
-        if self.rows.len() != self.range.end - self.range.start {
-            return Err(Error::Invalid("row cardinality"));
-        }
-        ceiling(
-            serde_json::to_vec(self)?.len(),
-            limits::ROWS_BYTES,
-            "rows bytes",
-        )?;
-        let mut keys = BTreeSet::new();
-        let (mut nodes, mut ops) = (0usize, 0usize);
+        self.validate_shape()?;
         for row in &self.rows {
-            if !keys.insert(&row.key) {
-                return Err(Error::Invalid("duplicate row key"));
+            for node in &row.nodes {
+                validate_node_payload(node, &context.entities, &context.assets, &context.lists)?;
+                for op in &node.ops {
+                    context.tables.validate_op(op)?;
+                }
             }
-            validate_single_tree(&row.nodes, row.root, tables, false)?;
-            if canonical_digest(row, "content_hash")? != row.content_hash {
-                return Err(Error::DigestMismatch);
-            }
-            nodes = nodes.saturating_add(row.nodes.len());
-            ops = ops.saturating_add(row.nodes.iter().map(|n| n.ops.len()).sum::<usize>());
         }
-        ceiling(nodes, limits::NODES, "row aggregate nodes")?;
-        ceiling(ops, limits::STORED_OPS, "row aggregate ops")?;
         Ok(())
     }
 }
@@ -884,16 +1114,17 @@ impl ReceiveContext {
 /// sequence numbers, but callers must keep these generation floors for the copy.
 #[derive(Debug, Default, Clone)]
 pub struct GenerationTracker {
-    high: BTreeMap<Counter, Counter>,
+    high: Counter,
 }
 impl GenerationTracker {
+    pub fn high_watermark(&self) -> Counter {
+        self.high
+    }
     pub fn check(&self, publish: &Publish) -> Result<()> {
+        ceiling(publish.views_full.len(), limits::NODES, "views")?;
+        let mut seen = BTreeSet::new();
         for v in &publish.views_full {
-            if self
-                .high
-                .get(&v.view_ref.id)
-                .is_some_and(|last| v.generation <= *last)
-            {
+            if v.generation <= self.high || !seen.insert(v.generation) {
                 return Err(Error::Stale("view generation reused"));
             }
         }
@@ -901,9 +1132,12 @@ impl GenerationTracker {
     }
     pub fn commit(&mut self, publish: &Publish) -> Result<()> {
         self.check(publish)?;
-        for v in &publish.views_full {
-            self.high.insert(v.view_ref.id, v.generation);
-        }
+        self.high = publish
+            .views_full
+            .iter()
+            .map(|v| v.generation)
+            .max()
+            .unwrap_or(self.high);
         Ok(())
     }
 }
@@ -937,77 +1171,22 @@ impl ReceiptFloors {
         {
             return Err(Error::Stale("BehindReceipt"));
         }
+        // A release is final for this exact incarnation, even without a receipt floor.
+        for e in &publish.entities_full {
+            if tombstones.iter().any(|release| release.r#ref == e.r#ref) {
+                return Err(Error::Stale("released entity reappeared"));
+            }
+        }
         for (r, rev) in &self.entities {
-            let covered = publish
-                .entities_full
-                .iter()
-                .any(|e| e.r#ref == *r && e.rev >= *rev)
-                || tombstones.iter().any(|e| e.r#ref == *r && e.rev >= *rev);
+            let covered = match publish.entities_full.iter().find(|e| e.r#ref == *r) {
+                Some(e) => e.rev >= *rev,
+                None => tombstones.iter().any(|e| e.r#ref == *r && e.rev >= *rev),
+            };
             if !covered {
                 return Err(Error::Stale("entity receipt floor"));
             }
         }
         Ok(())
-    }
-}
-impl NegotiatedLimits {
-    pub fn validate(&self) -> Result<()> {
-        for (value, max) in [
-            (self.publish_bytes, limits::PUBLISH_BYTES),
-            (self.decompressed_bytes, limits::PUBLISH_DECOMPRESSED_BYTES),
-            (self.nodes, limits::NODES),
-            (self.depth, limits::DEPTH),
-            (self.visits, limits::VISITS),
-            (self.stored_ops, limits::STORED_OPS),
-            (self.expanded_ops, limits::EXPANDED_OPS),
-            (self.control_bytes, limits::CONTROL_BYTES),
-            (self.rows, limits::ROWS),
-            (self.rows_bytes, limits::ROWS_BYTES),
-            (self.image_bytes, limits::IMAGE_BYTES),
-            (self.svg_bytes, limits::SVG_BYTES),
-        ] {
-            if value == 0 {
-                return Err(Error::Invalid("zero negotiated limit"));
-            }
-            ceiling(value, max, "negotiated limit increase")?;
-        }
-        Ok(())
-    }
-    pub fn intersect(&self, peer: &Self) -> Result<Self> {
-        self.validate()?;
-        peer.validate()?;
-        Ok(Self {
-            publish_bytes: self.publish_bytes.min(peer.publish_bytes),
-            decompressed_bytes: self.decompressed_bytes.min(peer.decompressed_bytes),
-            nodes: self.nodes.min(peer.nodes),
-            depth: self.depth.min(peer.depth),
-            visits: self.visits.min(peer.visits),
-            stored_ops: self.stored_ops.min(peer.stored_ops),
-            expanded_ops: self.expanded_ops.min(peer.expanded_ops),
-            control_bytes: self.control_bytes.min(peer.control_bytes),
-            rows: self.rows.min(peer.rows),
-            rows_bytes: self.rows_bytes.min(peer.rows_bytes),
-            image_bytes: self.image_bytes.min(peer.image_bytes),
-            svg_bytes: self.svg_bytes.min(peer.svg_bytes),
-        })
-    }
-}
-impl Default for NegotiatedLimits {
-    fn default() -> Self {
-        Self {
-            publish_bytes: limits::PUBLISH_BYTES,
-            decompressed_bytes: limits::PUBLISH_DECOMPRESSED_BYTES,
-            nodes: limits::NODES,
-            depth: limits::DEPTH,
-            visits: limits::VISITS,
-            stored_ops: limits::STORED_OPS,
-            expanded_ops: limits::EXPANDED_OPS,
-            control_bytes: limits::CONTROL_BYTES,
-            rows: limits::ROWS,
-            rows_bytes: limits::ROWS_BYTES,
-            image_bytes: limits::IMAGE_BYTES,
-            svg_bytes: limits::SVG_BYTES,
-        }
     }
 }
 impl Hello {
@@ -1062,6 +1241,21 @@ impl Action {
         }
         if let Some(n) = self.data.value {
             finite(n)?;
+        }
+        if !self.data.permissions.is_empty()
+            && !matches!(self.kind, ActionKind::Click | ActionKind::Key)
+        {
+            return Err(Error::Invalid("permission requires individual tap/key"));
+        }
+        let mut permissions = BTreeSet::new();
+        let mut operations = BTreeSet::new();
+        for permission in &self.data.permissions {
+            if permission.policy_rev.0 == 0
+                || !permissions.insert(permission.permission.clone())
+                || !operations.insert(permission.operation)
+            {
+                return Err(Error::Invalid("duplicate/invalid device permission"));
+            }
         }
         if canonical_digest(self, "digest")? != self.digest {
             return Err(Error::DigestMismatch);
@@ -1157,6 +1351,96 @@ impl ResourceLedger {
             .checked_sub(amount)
             .ok_or(Error::Invalid("resource release underflow"))?;
         self.used.insert(r, next);
+        Ok(())
+    }
+}
+
+impl Overlay {
+    pub fn validate(&self) -> Result<()> {
+        if self.id.is_empty() || self.copy.is_empty() {
+            return Err(Error::Invalid("overlay identity"));
+        }
+        match (self.kind, &self.toast) {
+            (OverlayKind::Overlay, None) => Ok(()),
+            (OverlayKind::Toast, Some(toast))
+                if !toast.message.is_empty()
+                    && !toast.mod_name.is_empty()
+                    && !toast.host_name.is_empty() =>
+            {
+                Ok(())
+            }
+            _ => Err(Error::Invalid("overlay kind/content")),
+        }
+    }
+}
+impl GatewayTarget {
+    /// Compare with an externally authenticated target, never a self-reported identity.
+    pub fn validate_against(&self, expected: &ReceiveContext) -> Result<()> {
+        match &expected.scope {
+            Scope::Copy { id, incarnation }
+                if self.boot == expected.session.boot
+                    && self.copy == *id
+                    && self.incarnation == *incarnation =>
+            {
+                Ok(())
+            }
+            _ => Err(Error::Stale("gateway target")),
+        }
+    }
+}
+impl GatewayRequest {
+    pub fn validate(&self) -> Result<()> {
+        if self.request_id.is_empty() || self.target.copy.is_empty() || self.policy_rev.0 == 0 {
+            return Err(Error::Invalid("gateway identity/policy"));
+        }
+        match &self.operation {
+            GatewayOperation::Run { command, .. } if command.is_empty() => {
+                return Err(Error::Invalid("gateway command"));
+            }
+            GatewayOperation::OpenOverlay { overlay } => overlay.validate()?,
+            GatewayOperation::Notify { overlay } => {
+                overlay.validate()?;
+                if overlay.kind != OverlayKind::Toast {
+                    return Err(Error::Invalid("notify requires toast"));
+                }
+            }
+            GatewayOperation::CloseOverlay { overlay_id } if overlay_id.is_empty() => {
+                return Err(Error::Invalid("gateway overlay"));
+            }
+            GatewayOperation::SetAgentOrder { agents } => {
+                let mut seen = BTreeSet::new();
+                if agents
+                    .iter()
+                    .any(|agent| agent.is_empty() || !seen.insert(agent))
+                {
+                    return Err(Error::Invalid("gateway agent order"));
+                }
+            }
+            _ => {}
+        }
+        ceiling(
+            string_bytes(self)?,
+            limits::STRINGS_BYTES,
+            "aggregate strings",
+        )?;
+        Ok(())
+    }
+}
+impl DeviceRequest {
+    /// Check the explicit hand-off only. The device MUST also check its own
+    /// one-use ledger, current epoch/owner/copy, policy, expiry and cancellation.
+    pub fn validate_permission(&self, action: &Action) -> Result<()> {
+        self.validate()?;
+        action.validate()?;
+        if self.event_id != action.event_id
+            || !action.data.permissions.iter().any(|p| {
+                p.permission == self.permission
+                    && p.operation == self.operation
+                    && p.policy_rev == self.policy_rev
+            })
+        {
+            return Err(Error::Invalid("device permission hand-off"));
+        }
         Ok(())
     }
 }

@@ -23,21 +23,106 @@ pub struct Digests {
     pub entity: Digest,
     pub command: Digest,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NegotiatedLimits {
-    pub publish_bytes: usize,
-    pub decompressed_bytes: usize,
-    pub nodes: usize,
-    pub depth: usize,
-    pub visits: usize,
-    pub stored_ops: usize,
-    pub expanded_ops: usize,
-    pub control_bytes: usize,
-    pub rows: usize,
-    pub rows_bytes: usize,
-    pub image_bytes: usize,
-    pub svg_bytes: usize,
+// One list keeps the handshake schema, defaults and downward intersection aligned.
+// The list covers every A8 ceiling; coordinate_abs is the only floating-point cap.
+macro_rules! negotiated_limits {
+    ($($field:ident: $cap:ident),+ $(,)?) => {
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct NegotiatedLimits {
+            $(pub $field: usize,)+
+            pub coordinate_abs: f64,
+        }
+        impl Default for NegotiatedLimits {
+            fn default() -> Self {
+                Self { $($field: limits::$cap,)+ coordinate_abs: limits::COORDINATE_ABS }
+            }
+        }
+        impl NegotiatedLimits {
+            pub fn validate(&self) -> Result<()> {
+                $(if self.$field == 0 {
+                    return Err(Error::Invalid("zero negotiated limit"));
+                }
+                if self.$field > limits::$cap {
+                    return Err(Error::Limit("negotiated limit increase"));
+                })+
+                if !self.coordinate_abs.is_finite() || self.coordinate_abs <= 0.0 {
+                    return Err(Error::Invalid("negotiated coordinate limit"));
+                }
+                if self.coordinate_abs > limits::COORDINATE_ABS {
+                    return Err(Error::Limit("negotiated limit increase"));
+                }
+                Ok(())
+            }
+            pub fn intersect(&self, peer: &Self) -> Result<Self> {
+                self.validate()?;
+                peer.validate()?;
+                Ok(Self {
+                    $($field: self.$field.min(peer.$field),)+
+                    coordinate_abs: self.coordinate_abs.min(peer.coordinate_abs),
+                })
+            }
+        }
+    }
+}
+negotiated_limits! {
+    publish_bytes: PUBLISH_BYTES,
+    decompressed_bytes: PUBLISH_DECOMPRESSED_BYTES,
+    nodes: NODES,
+    depth: DEPTH,
+    visits: VISITS,
+    stored_ops: STORED_OPS,
+    expanded_ops: EXPANDED_OPS,
+    string_bytes: STRING_BYTES,
+    strings_bytes: STRINGS_BYTES,
+    entities: ENTITIES,
+    entity_string_bytes: ENTITY_STRING_BYTES,
+    entity_state_bytes: ENTITY_STATE_BYTES,
+    copies_host: COPIES_HOST,
+    copies_app: COPIES_APP,
+    callback_generations: CALLBACK_GENERATIONS,
+    callbacks: CALLBACKS,
+    event_queue: EVENT_QUEUE,
+    control_bytes: CONTROL_BYTES,
+    control_pending_bytes: CONTROL_PENDING_BYTES,
+    control_per_second: CONTROL_PER_SECOND,
+    receipts: RECEIPTS,
+    receipts_bytes: RECEIPTS_BYTES,
+    rows: ROWS,
+    rows_bytes: ROWS_BYTES,
+    list_items: LIST_ITEMS,
+    lists: LISTS,
+    row_requests_list: ROW_REQUESTS_LIST,
+    row_requests_copy: ROW_REQUESTS_COPY,
+    row_requests_app: ROW_REQUESTS_APP,
+    row_cache_bytes: ROW_CACHE_BYTES,
+    image_bytes: IMAGE_BYTES,
+    image_dimension: IMAGE_DIMENSION,
+    svg_bytes: SVG_BYTES,
+    asset_cache_bytes: ASSET_CACHE_BYTES,
+    asset_transfers_copy: ASSET_TRANSFERS_COPY,
+    asset_transfers_host: ASSET_TRANSFERS_HOST,
+    asset_transfers_app: ASSET_TRANSFERS_APP,
+    asset_decoded_bytes: ASSET_DECODED_BYTES,
+    assets_decoded_bytes: ASSETS_DECODED_BYTES,
+    assets_pixels: ASSETS_PIXELS,
+    app_bytes: APP_BYTES,
+    js_heap_bytes: JS_HEAP_BYTES,
+    worker_rss_bytes: WORKER_RSS_BYTES,
+    workers_rss_bytes: WORKERS_RSS_BYTES,
+    children_copy: CHILDREN_COPY,
+    children_host: CHILDREN_HOST,
+    background_copies: BACKGROUND_COPIES,
+    js_call_ms: JS_CALL_MS,
+    validate_slice_ms: VALIDATE_SLICE_MS,
+    materialize_slice_ms: MATERIALIZE_SLICE_MS,
+    cpu_copy_ms_per_second: CPU_COPY_MS_PER_SECOND,
+    cpu_runner_ms_per_second: CPU_RUNNER_MS_PER_SECOND,
+    cpu_ipad_ms_per_second: CPU_IPAD_MS_PER_SECOND,
+    hello_timeout_ms: HELLO_TIMEOUT_MS,
+    publish_timeout_ms: PUBLISH_TIMEOUT_MS,
+    op_timeout_ms: OP_TIMEOUT_MS,
+    write_timeout_ms: WRITE_TIMEOUT_MS,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,6 +216,9 @@ pub struct ActionData {
     pub point: Option<Point>,
     pub value: Option<f64>,
     pub row_key: Option<String>,
+    /// Opaque per-event grants issued by the device, explicitly retained by async work.
+    /// Epoch, copy incarnation, owner fence and event ID come from this Action's envelope/body.
+    pub permissions: Vec<DevicePermission>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -555,6 +643,62 @@ pub enum DeviceResult {
     Expired,
     UnsupportedRemoteClipboard,
 }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevicePermission {
+    pub permission: Id128,
+    pub operation: DeviceOperation,
+    pub policy_rev: Counter,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayTarget {
+    pub boot: Id128,
+    pub copy: String,
+    pub incarnation: Id128,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayRequest {
+    pub request_id: String,
+    pub target: GatewayTarget,
+    pub policy_rev: Counter,
+    pub operation: GatewayOperation,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GatewayOperation {
+    Run { command: String, args: Vec<String> },
+    SetAgentOrder { agents: Vec<String> },
+    OpenOverlay { overlay: Overlay },
+    CloseOverlay { overlay_id: String },
+    Notify { overlay: Overlay },
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayReply {
+    pub request_id: String,
+    pub result: GatewayResult,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GatewayResult {
+    Ok,
+    Failed { reason: GatewayFailure },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayFailure {
+    NoOperatingConnection,
+    StaleTarget,
+    PolicyDenied,
+    Unsupported,
+    InvalidRequest,
+    NotOwned,
+    RateLimited,
+    LimitExceeded,
+    Cancelled,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum MessageKind {
     Hello,
@@ -601,6 +745,8 @@ pub enum MessageKind {
     BgGrantVerdict,
     DeviceRequest,
     DeviceReply,
+    GatewayRequest,
+    GatewayReply,
 }
 impl Payload for Hello {
     const KIND: MessageKind = MessageKind::Hello;
@@ -610,6 +756,12 @@ impl Payload for Hello {
 }
 impl Payload for HelloAck {
     const KIND: MessageKind = MessageKind::HelloAck;
+    fn validate_wire(&self) -> Result<()> {
+        if self.protocol != PROTOCOL {
+            return Err(Error::Unknown("hello protocol"));
+        }
+        self.limits.validate()
+    }
 }
 impl Payload for EntityCreate {
     const KIND: MessageKind = MessageKind::EntityCreate;
@@ -622,9 +774,15 @@ impl Payload for EntityCreate {
 }
 impl Payload for EntityUpdate {
     const KIND: MessageKind = MessageKind::EntityUpdate;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for EntityRelease {
     const KIND: MessageKind = MessageKind::EntityRelease;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for FocusAck {
     const KIND: MessageKind = MessageKind::FocusAck;
@@ -652,6 +810,9 @@ impl Payload for RowsRequest {
 }
 impl Payload for RowsReply {
     const KIND: MessageKind = MessageKind::RowsReply;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate_shape()
+    }
 }
 impl Payload for AssetRequest {
     const KIND: MessageKind = MessageKind::AssetRequest;
@@ -673,12 +834,21 @@ impl Payload for Action {
 }
 impl Payload for EditAck {
     const KIND: MessageKind = MessageKind::EditAck;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for ActionAck {
     const KIND: MessageKind = MessageKind::ActionAck;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for EditConflict {
     const KIND: MessageKind = MessageKind::EditConflict;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for OpFailed {
     const KIND: MessageKind = MessageKind::OpFailed;
@@ -697,6 +867,9 @@ impl Payload for ReplayUnknown {
 }
 impl Payload for HostStateCommit {
     const KIND: MessageKind = MessageKind::HostStateCommit;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
 }
 impl Payload for LeaseRequest {
     const KIND: MessageKind = MessageKind::LeaseRequest;
@@ -712,6 +885,9 @@ impl Payload for ResumeEdits {
 }
 impl Payload for StateProjection {
     const KIND: MessageKind = MessageKind::StateProjection;
+    fn validate_wire(&self) -> Result<()> {
+        self.window.validate()
+    }
 }
 impl Payload for ResyncRequired {
     const KIND: MessageKind = MessageKind::ResyncRequired;
@@ -757,4 +933,13 @@ impl Payload for DeviceRequest {
 }
 impl Payload for DeviceReply {
     const KIND: MessageKind = MessageKind::DeviceReply;
+}
+impl Payload for GatewayRequest {
+    const KIND: MessageKind = MessageKind::GatewayRequest;
+    fn validate_wire(&self) -> Result<()> {
+        self.validate()
+    }
+}
+impl Payload for GatewayReply {
+    const KIND: MessageKind = MessageKind::GatewayReply;
 }

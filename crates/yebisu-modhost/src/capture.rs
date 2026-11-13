@@ -43,10 +43,12 @@ impl Capture<'_> {
                     .context("missing retained input")?;
                 let input = input.read(self.cx);
                 let presentation = input.presentation();
+                let text = input.value().to_string();
                 let (start, end, reversed) = input.snapshot_selection();
+                let selection = input_selection(&text, start, end, reversed)?;
                 (
                     json!({"kind":"Input","placeholder":presentation.placeholder().to_string(),"masked":presentation.is_masked(),"loading":presentation.is_loading(),"readonly":presentation.is_readonly(),"number":null}),
-                    json!({"kind":"Input","text":input.value().to_string(),"selection":{"start":start,"end":end,"direction":if reversed {"backward"}else{"forward"}}}),
+                    json!({"kind":"Input","text":text,"selection":selection}),
                     self.view
                         .snapshot_input_events(handle)
                         .into_iter()
@@ -152,6 +154,64 @@ impl Capture<'_> {
         self.assets.insert(id.clone(),json!({"id":id,"digest":id,"kind":"svg","encoded_bytes":bytes.len(),"decoded_bytes":size.width() as u64*size.height() as u64*4,"width":size.width(),"height":size.height()}));
         Ok(json!({"id":id,"digest":id}))
     }
+}
+
+fn input_selection(
+    text: &str,
+    start: usize,
+    end: usize,
+    reversed: bool,
+) -> Result<yebisu_mod_wire::Selection> {
+    use yebisu_mod_wire::{Direction, Selection};
+    Ok(Selection::from_utf16(
+        text,
+        start,
+        end,
+        if reversed {
+            Direction::Backward
+        } else {
+            Direction::Forward
+        },
+    )?)
+}
+
+// Retained native entities can notify without rebuilding their owning ScriptView.
+// Compare with the last publication's revision so revision allocation itself does
+// not look like a state change. Reuse the export path for config and subscriptions.
+pub fn retained_changed(
+    previous: &Value,
+    view: &ScriptView,
+    cx: &App,
+    window: &Window,
+    destination: Destination<'_>,
+) -> Result<bool> {
+    let mut cap = Capture {
+        view,
+        cx,
+        window,
+        home: destination.home,
+        output: destination.output,
+        incarnation: destination.incarnation,
+        revision: destination.revision,
+        entities: BTreeMap::new(),
+        assets: BTreeMap::new(),
+        lists: vec![],
+    };
+    for entity in previous["entities_full"]
+        .as_array()
+        .context("previous entities")?
+    {
+        let kind = entity["ref"]["kind"].as_str().context("entity kind")?;
+        if kind == "View" {
+            continue;
+        }
+        let handle = entity["ref"]["id"].as_str().context("entity id")?.parse()?;
+        cap.entity(handle, kind)?;
+        if cap.entities.get(&handle) != Some(entity) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub struct Destination<'a> {
@@ -266,4 +326,19 @@ pub fn publish(
     Ok(
         json!({"pub_rev":revision.to_string(),"wm":{"processed_op_seq":"0","state_rev":revision.to_string(),"settled_local_seq":"0"},"entities_full":cap.entities.into_values().collect::<Vec<_>>(),"views_full":[{"view_ref":reference,"generation":revision.to_string(),"root":root,"nodes":nodes,"state_rev":revision.to_string()}],"focus_state":[],"overlays_full":[],"list_manifests":cap.lists,"asset_manifests":cap.assets.into_values().collect::<Vec<_>>()}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::input_selection;
+    use yebisu_mod_wire::Direction;
+
+    #[test]
+    fn selection_conversion_preserves_direction_and_rejects_surrogate_interior() {
+        let selection = input_selection("あ😀é", 1, 3, true).unwrap();
+        assert_eq!((selection.start, selection.end), (3, 7));
+        assert_eq!(selection.direction, Direction::Backward);
+        assert!(input_selection("あ😀é", 2, 3, false).is_err());
+        assert!(input_selection("あ😀é", 0, 5, false).is_err());
+    }
 }

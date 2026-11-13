@@ -5,19 +5,23 @@ The actual inputs are one synthetic space/tab without a repository, agents or
 external commands. Git Graph and reviewer display their `No folder` screens.
 The three bundled mods render workspace chrome. All five unmodified JS bundles
 loaded into one shared VM and five native 800 × 600 headless windows on pro-dev.
-The source pins are in `scripts/prepare-fixtures.py`.
+The source pins are in `scripts/prepare-fixtures.py`. This is a new measurement
+following the retained-Input publication fix and wire b69cfeb integration;
+retained-state comparison and keeping the last publication can affect runtime
+cost. It replaces the earlier prototype samples, with the same 60 idle samples
+and five initial publications. It is not an estimate of the change's effect.
 
 | Observed metric | Measured value | Design comparison |
 | --- | ---: | ---: |
-| Runner idle RSS peak (includes VM and five windows) | 99,524,608 bytes (99.52 MB) | ≤ 150 MB |
-| Runner idle CPU (one logical CPU = 100%) | 0.0169214% | < 1% |
-| Compressed snapshot p95 | 1,959 bytes | ≤ 65,536 bytes |
+| Runner idle RSS peak (includes VM and five windows) | 99,856,384 bytes (99.86 MB) | ≤ 150 MB |
+| Runner idle CPU (one logical CPU = 100%) | 0.0338279% | < 1% |
+| Compressed snapshot p95 | 1,960 bytes | ≤ 65,536 bytes |
 | Worker processes | none implemented | no separate worker measurement |
 | Descendant processes observed | 0 in all process samples | no child workload |
 
-Measurement start: 2026-11-13T17:43:00Z. Linux 7.0.14-19-pve x86_64,
+Measurement start: 2026-11-13T19:04:31Z. Linux 7.0.14-19-pve x86_64,
 Rust 1.99.1, dev build with debuginfo=0 (not release). The idle window is
-5.009–64.106 seconds after launch: 60 `/proc` samples, 59.097 seconds between
+5.032–64.155 seconds after launch: 60 `/proc` samples, 59.123 seconds between
 first/last CPU counters. CPU uses process utime+stime divided by CLK_TCK and
 monotonic elapsed time. Child detection reads every task's children file.
 

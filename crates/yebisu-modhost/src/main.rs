@@ -100,7 +100,7 @@ fn main() -> Result<()> {
                     tx.try_send(()).ok();
                     cx.spawn(async move |cx| {
                         let _runtime = runtime;
-                        let mut previous = None;
+                        let mut previous: Option<(u64, serde_json::Value)> = None;
                         let mut generation = 0;
                         let mut last = Instant::now() - Duration::from_secs(1);
                         while rx.recv().await.is_ok() {
@@ -116,12 +116,30 @@ fn main() -> Result<()> {
                                     bail!("{name}: {error}");
                                 }
                                 if let Some(snapshot) = state.snapshot() {
-                                    let tree = snapshot.debug_tree();
-                                    if previous != Some(snapshot.generation()) {
+                                    let changed = match &previous {
+                                        Some((shell_generation, published))
+                                            if *shell_generation == snapshot.generation() =>
+                                        {
+                                            capture::retained_changed(
+                                                published,
+                                                state,
+                                                cx,
+                                                window,
+                                                capture::Destination {
+                                                    home: &home,
+                                                    output: &output,
+                                                    incarnation: &incarnation,
+                                                    revision: generation,
+                                                },
+                                            )?
+                                        }
+                                        _ => true,
+                                    };
+                                    if changed {
                                         generation += 1;
                                         std::fs::write(
                                             output.join(format!("{name}-{generation:04}.tree")),
-                                            &tree,
+                                            snapshot.debug_tree(),
                                         )?;
                                         let publish = capture::publish(
                                             snapshot,
@@ -141,9 +159,9 @@ fn main() -> Result<()> {
                                             generation,
                                             &boot,
                                             &incarnation,
-                                            publish,
+                                            &publish,
                                         )?;
-                                        previous = Some(snapshot.generation());
+                                        previous = Some((snapshot.generation(), publish));
                                     }
                                 }
                                 Ok(again)

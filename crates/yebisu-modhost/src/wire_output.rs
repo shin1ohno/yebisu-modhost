@@ -74,6 +74,8 @@ pub fn tables() -> wire::ValidationTables {
         .into_iter()
         .map(str::to_owned)
         .collect(),
+        // Offline host::commands returns an empty catalog; no actions are negotiated.
+        actions: Default::default(),
         slots: ["content", "trigger"]
             .into_iter()
             .map(str::to_owned)
@@ -87,9 +89,10 @@ pub fn write(
     revision: u64,
     boot: &str,
     incarnation: &str,
-    value: Value,
+    value: &Value,
 ) -> Result<()> {
-    let publish: wire::Publish = serde_json::from_value(value).context("shell to wire Publish")?;
+    let publish: wire::Publish =
+        serde_json::from_value(value.clone()).context("shell to wire Publish")?;
     publish
         .validate(&tables())
         .context("validate shell publication")?;
@@ -198,6 +201,6 @@ pub fn inspect(path: &Path) -> Result<Value> {
         );
     }
     Ok(
-        json!({"file":path,"scope":received.scope,"generation":received.body.pub_rev,"nodes":received.body.views_full.iter().map(|v|v.nodes.len()).sum::<usize>(),"texts":received.body.views_full.iter().flat_map(|v|v.nodes.iter().filter_map(|n|n.text.as_deref())).collect::<Vec<_>>(),"entities":received.body.entities_full.len(),"assets":received.body.asset_manifests.len(),"compressed_bytes":compressed.len(),"json_bytes":json_bytes.len()}),
+        json!({"file":path,"scope":received.scope,"generation":received.body.pub_rev,"nodes":received.body.views_full.iter().map(|v|v.nodes.len()).sum::<usize>(),"texts":received.body.views_full.iter().flat_map(|v|v.nodes.iter().filter_map(|n|n.text.as_deref())).collect::<Vec<_>>(),"entities":received.body.entities_full.len(),"retained_entities":received.body.entities_full,"state_rev":received.body.wm.state_rev,"assets":received.body.asset_manifests.len(),"compressed_bytes":compressed.len(),"json_bytes":json_bytes.len()}),
     )
 }

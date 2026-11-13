@@ -1,10 +1,10 @@
 [
   {
-    "file": "git-graph-0001.frames",
+    "file": "/home/shin1ohno/.local/state/chief-of-staff/aab1ad73c1aa4791/measurements-2/git-graph-0001.frames",
     "scope": {
       "kind": "copy",
       "id": "git-graph",
-      "incarnation": "bd6e4862ef60c3f9774a420067cb3516"
+      "incarnation": "878678a4d4d2f2927d5ca4de0604e4a6"
     },
     "generation": "1",
     "nodes": 12,
@@ -14,16 +14,61 @@
       "Focus a terminal to see the history of the repository it's in."
     ],
     "entities": 2,
+    "retained_entities": [
+      {
+        "ref": {
+          "id": "1",
+          "incarnation": "878678a4d4d2f2927d5ca4de0604e4a6",
+          "kind": "Focus"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "Focus"
+        },
+        "state": {
+          "kind": "Focus",
+          "id": "1",
+          "focused": false
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": []
+        }
+      },
+      {
+        "ref": {
+          "id": "18446744073709551615",
+          "incarnation": "878678a4d4d2f2927d5ca4de0604e4a6",
+          "kind": "View"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "View"
+        },
+        "state": {
+          "kind": "View",
+          "parent": null,
+          "root": 0,
+          "generation": "1",
+          "props_rev": "1"
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": []
+        }
+      }
+    ],
+    "state_rev": "1",
     "assets": 1,
-    "compressed_bytes": 1374,
+    "compressed_bytes": 1373,
     "json_bytes": 6680
   },
   {
-    "file": "reviewer-0001.frames",
+    "file": "/home/shin1ohno/.local/state/chief-of-staff/aab1ad73c1aa4791/measurements-2/reviewer-0001.frames",
     "scope": {
       "kind": "copy",
       "id": "reviewer",
-      "incarnation": "922fb3d42bb92000a67622c9a47844db"
+      "incarnation": "7f73b96745ac5f7c62f70508998406c0"
     },
     "generation": "1",
     "nodes": 25,
@@ -37,16 +82,121 @@
       "Commit"
     ],
     "entities": 4,
+    "retained_entities": [
+      {
+        "ref": {
+          "id": "2",
+          "incarnation": "7f73b96745ac5f7c62f70508998406c0",
+          "kind": "Focus"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "Focus"
+        },
+        "state": {
+          "kind": "Focus",
+          "id": "2",
+          "focused": false
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": []
+        }
+      },
+      {
+        "ref": {
+          "id": "3",
+          "incarnation": "7f73b96745ac5f7c62f70508998406c0",
+          "kind": "VirtualScroll"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "VirtualScroll"
+        },
+        "state": {
+          "kind": "VirtualScroll",
+          "offset": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "anchor_key": "",
+          "anchor_index": 0,
+          "content_rev": "1",
+          "request": null
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": []
+        }
+      },
+      {
+        "ref": {
+          "id": "4",
+          "incarnation": "7f73b96745ac5f7c62f70508998406c0",
+          "kind": "Input"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "Input",
+          "placeholder": "Commit message",
+          "masked": false,
+          "loading": false,
+          "readonly": false,
+          "number": null
+        },
+        "state": {
+          "kind": "Input",
+          "text": "",
+          "selection": {
+            "start": 0,
+            "end": 0,
+            "direction": "forward"
+          }
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": [
+            "change",
+            "submit",
+            "focus",
+            "blur"
+          ]
+        }
+      },
+      {
+        "ref": {
+          "id": "18446744073709551615",
+          "incarnation": "7f73b96745ac5f7c62f70508998406c0",
+          "kind": "View"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "View"
+        },
+        "state": {
+          "kind": "View",
+          "parent": null,
+          "root": 0,
+          "generation": "1",
+          "props_rev": "1"
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": []
+        }
+      }
+    ],
+    "state_rev": "1",
     "assets": 0,
-    "compressed_bytes": 1959,
+    "compressed_bytes": 1960,
     "json_bytes": 12265
   },
   {
-    "file": "tabs-0001.frames",
+    "file": "/home/shin1ohno/.local/state/chief-of-staff/aab1ad73c1aa4791/measurements-2/tabs-0001.frames",
     "scope": {
       "kind": "copy",
       "id": "tabs",
-      "incarnation": "e1157160556f4377190d9f643275d6ca"
+      "incarnation": "6924ed9480e98fae0486667fda54ad5b"
     },
     "generation": "1",
     "nodes": 19,
@@ -57,16 +207,72 @@
       "Changes"
     ],
     "entities": 2,
+    "retained_entities": [
+      {
+        "ref": {
+          "id": "0",
+          "incarnation": "6924ed9480e98fae0486667fda54ad5b",
+          "kind": "Scroll"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "Scroll"
+        },
+        "state": {
+          "kind": "Scroll",
+          "offset": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "viewport": {
+            "width": 595.0,
+            "height": 599.0
+          },
+          "content": {
+            "width": 595.0,
+            "height": 599.0
+          },
+          "request": null
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": []
+        }
+      },
+      {
+        "ref": {
+          "id": "18446744073709551615",
+          "incarnation": "6924ed9480e98fae0486667fda54ad5b",
+          "kind": "View"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "View"
+        },
+        "state": {
+          "kind": "View",
+          "parent": null,
+          "root": 0,
+          "generation": "1",
+          "props_rev": "1"
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": []
+        }
+      }
+    ],
+    "state_rev": "1",
     "assets": 3,
     "compressed_bytes": 1715,
     "json_bytes": 10881
   },
   {
-    "file": "terminals-bar-0001.frames",
+    "file": "/home/shin1ohno/.local/state/chief-of-staff/aab1ad73c1aa4791/measurements-2/terminals-bar-0001.frames",
     "scope": {
       "kind": "copy",
       "id": "terminals-bar",
-      "incarnation": "36b52d181bea7a97be9ef3542b25b4fb"
+      "incarnation": "fd5dfc82be1045496e8130b88330c9f6"
     },
     "generation": "1",
     "nodes": 19,
@@ -75,16 +281,41 @@
       "Prototype"
     ],
     "entities": 1,
+    "retained_entities": [
+      {
+        "ref": {
+          "id": "18446744073709551615",
+          "incarnation": "fd5dfc82be1045496e8130b88330c9f6",
+          "kind": "View"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "View"
+        },
+        "state": {
+          "kind": "View",
+          "parent": null,
+          "root": 0,
+          "generation": "1",
+          "props_rev": "1"
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": []
+        }
+      }
+    ],
+    "state_rev": "1",
     "assets": 3,
-    "compressed_bytes": 1660,
+    "compressed_bytes": 1662,
     "json_bytes": 10817
   },
   {
-    "file": "workspace-status-0001.frames",
+    "file": "/home/shin1ohno/.local/state/chief-of-staff/aab1ad73c1aa4791/measurements-2/workspace-status-0001.frames",
     "scope": {
       "kind": "copy",
       "id": "workspace-status",
-      "incarnation": "2423e3059669d0ed7a50a540c8f6f69b"
+      "incarnation": "4ec7c6a6c74b1a486961af4c70d7d9b5"
     },
     "generation": "1",
     "nodes": 10,
@@ -94,6 +325,31 @@
       "commands"
     ],
     "entities": 1,
+    "retained_entities": [
+      {
+        "ref": {
+          "id": "18446744073709551615",
+          "incarnation": "4ec7c6a6c74b1a486961af4c70d7d9b5",
+          "kind": "View"
+        },
+        "rev": "1",
+        "config": {
+          "kind": "View"
+        },
+        "state": {
+          "kind": "View",
+          "parent": null,
+          "root": 0,
+          "generation": "1",
+          "props_rev": "1"
+        },
+        "subscriptions": {
+          "rev": "1",
+          "events": []
+        }
+      }
+    ],
+    "state_rev": "1",
     "assets": 1,
     "compressed_bytes": 1026,
     "json_bytes": 4187

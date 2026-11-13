@@ -170,9 +170,14 @@ pub fn decode_hello_ack_bootstrap(bytes: &[u8]) -> Result<HelloAckBootstrap> {
         return Err(Error::Limit("HelloAck"));
     }
     let value = strict_json(bytes)?;
+    if value.get("type").and_then(Value::as_str) != Some("HelloAck") {
+        return Err(Error::Invalid("HelloAck bootstrap type"));
+    }
+    let body = value
+        .get("body")
+        .ok_or(Error::Invalid("HelloAck bootstrap body"))?;
     let field = |name: &str| {
-        value
-            .get(name)
+        body.get(name)
             .cloned()
             .ok_or(Error::Invalid("HelloAck bootstrap"))
     };
