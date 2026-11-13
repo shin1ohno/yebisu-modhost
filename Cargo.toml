@@ -1,6 +1,5 @@
 [workspace]
 members = ["crates/yebisu-mod-wire", "crates/yebisu-modhost"]
-exclude = ["crates/yebisu-modhost/vendor/*"]
 resolver = "2"
 
 [workspace.package]
