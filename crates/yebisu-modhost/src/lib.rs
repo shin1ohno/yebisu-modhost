@@ -1,1 +1,1 @@
-//! Workspace placeholder; the runner implementation owns this crate.
+//! Linux headless mod runner; see the crate README for capture and inspection.

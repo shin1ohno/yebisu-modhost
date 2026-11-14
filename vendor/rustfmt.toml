@@ -1,0 +1,2 @@
+# Keep third-party copies byte-identical except for documented patches.
+disable_all_formatting = true
