@@ -57,6 +57,7 @@ fn validate_rows(
 ) -> Result<()> {
     let mut publication = publish();
     publication.views_full[0].nodes[0] = list_node(&manifest.list_id);
+    publication.entities_full.push(list_scroll());
     publication.list_manifests.push(manifest.clone());
     let context = RowValidation::new(&publication, tables)?;
     reply.validate_against(request, manifest, &context)
@@ -741,10 +742,11 @@ fn row_identity_cardinality_keys_and_callbacks() {
 }
 #[test]
 fn url_scheme_and_credentials_checked_and_host_normalized() {
-    assert_eq!(
-        validate_url("https://EXAMPLE.com/path").unwrap(),
-        "example.com"
-    );
+    // Senders normalize; receivers accept only the canonical string (audit X10).
+    let canonical = normalize_url("https://EXAMPLE.com/path").unwrap();
+    assert_eq!(canonical, "https://example.com/path");
+    assert_eq!(validate_url(&canonical).unwrap(), "example.com");
+    assert!(validate_url("https://EXAMPLE.com/path").is_err());
     for url in [
         "http://example.com",
         "file:///etc/passwd",
@@ -777,14 +779,22 @@ fn asset_limits_digest_and_request_binding() {
             digest: m.digest.clone(),
         },
     };
-    let mut reply = AssetReply {
+    let reply = AssetReply {
         request_id: "req".into(),
         asset: req.asset.clone(),
-        bytes,
+        channel: 1,
+        total_bytes: bytes.len(),
+        chunk_count: 1,
     };
     reply.validate_against(&req, &m).unwrap();
-    reply.bytes[0] = 0;
-    assert_eq!(reply.validate_against(&req, &m), Err(Error::DigestMismatch));
+    let mut a = AssetAssembler::new(&reply, &req, &m).unwrap();
+    a.push(0, &bytes).unwrap();
+    assert_eq!(a.finish().unwrap(), bytes);
+    let mut altered = bytes.clone();
+    altered[0] = 0;
+    let mut a = AssetAssembler::new(&reply, &req, &m).unwrap();
+    a.push(0, &altered).unwrap();
+    assert_eq!(a.finish(), Err(Error::DigestMismatch));
     m.encoded_bytes = limits::IMAGE_BYTES + 1;
     assert_eq!(m.validate(), Err(Error::Limit("encoded asset bytes")));
     m.kind = AssetKind::Svg;
@@ -850,6 +860,7 @@ fn publish_assembly_checks_order_total_and_both_digests() {
         total_bytes: bytes.len(),
         chunk_count: 2,
         digest: bytes_digest(bytes),
+        channel: 1,
     };
     let mut a = PublishAssembler::new(begin.clone()).unwrap();
     assert_eq!(a.push(1, b"x"), Err(Error::Invalid("chunk order")));
@@ -1430,6 +1441,7 @@ fn rows_resolve_component_entity_asset_list_and_op_references_in_current_copy() 
     p.list_manifests.push(list());
     p.views_full[0].nodes[0] = list_node("list");
     p.entities_full.push(input());
+    p.entities_full.push(list_scroll());
     let asset = AssetManifest {
         id: "icon".into(),
         digest: digest(),
@@ -2452,7 +2464,7 @@ fn gateway_operations_results_and_toast_discriminator_roundtrip() {
     }
     roundtrip(GatewayReply {
         request_id: "gateway".into(),
-        result: GatewayResult::Ok,
+        result: GatewayResult::Ok {},
     });
     for reason in [
         GatewayFailure::NoOperatingConnection,
@@ -2628,10 +2640,32 @@ fn rows_sum_expanded_ops_independently_of_visits() {
     assert_row_expansion_budget(12, 50, Error::Limit("expanded ops"));
 }
 
+const LIST_SCROLL: u64 = 90;
+/// VirtualList/List nodes keep their position in a VirtualScroll entity (A2).
+fn list_scroll() -> EntityCreate {
+    let r#ref = entity_ref(LIST_SCROLL, EntityKind::VirtualScroll);
+    EntityCreate {
+        r#ref,
+        rev: Counter(1),
+        config: EntityConfig::VirtualScroll {},
+        state: EntityState::VirtualScroll {
+            offset: Point { x: 0.0, y: 0.0 },
+            anchor_key: "row-0".into(),
+            anchor_index: 0,
+            content_rev: Counter(1),
+            request: None,
+        },
+        subscriptions: Subscriptions {
+            rev: Counter(1),
+            events: vec![],
+        },
+    }
+}
 fn list_node(id: &str) -> Node {
     Node {
         component: Component::List,
         list_id: Some(id.into()),
+        entity: Some(entity_ref(LIST_SCROLL, EntityKind::VirtualScroll)),
         ..node()
     }
 }
@@ -2644,6 +2678,7 @@ fn two_list_views() -> Publish {
     second.generation = Counter(2);
     p.entities_full.push(view_entity(&second, None));
     p.views_full.push(second);
+    p.entities_full.push(list_scroll());
     p.list_manifests = vec![
         list(),
         ListManifest {
@@ -2802,6 +2837,7 @@ fn rows_reject_nested_lists_that_could_never_receive_rows() {
     // RowsRequest for "nested" was Stale because no adopted view node owns it.
     let mut p = publish();
     p.views_full[0].nodes[0] = list_node("list");
+    p.entities_full.push(list_scroll());
     p.list_manifests = vec![
         list(),
         ListManifest {
