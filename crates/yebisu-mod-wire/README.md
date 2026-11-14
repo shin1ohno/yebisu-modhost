@@ -32,7 +32,13 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
    prior entity, outstanding request, or manifest. For rows, first construct
    `RowValidation::new(&adopted_publish, &tables)` and pass it as the third argument.
    Its immutable borrow resolves row entities, assets, lists and op arguments
-   against the currently adopted copy; authenticate the reply envelope with
+   against the currently adopted copy. List identity within that copy is
+   `(view_generation, list_id)`: `handler_generation` must match the view
+   containing the List/VirtualList node. The same ID can appear in different
+   view generations, but duplicate manifests for the same pair are rejected.
+   Rows require the matching list node in the requested view; an unused manifest
+   alone does not authorize delivery. Row list references use that same generation.
+   Authenticate the reply envelope with
    `ReceiveContext` before checking the outstanding request. No request identity is inferred
    from an ID alone. A missing entity never substitutes for a release tombstone;
    the receiver supplies its validated release ledger to `ReceiptFloors::check`.
@@ -47,9 +53,11 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
 
 Graph validation covers ordinary children, slots, state styles and ChildViews
 in one graph. It rejects cycles, unreachable nodes and bad indexes, and counts
-each repeated edge with saturating visit and weighted operation costs. This is
-performed before materialization. Row trees cannot register callbacks or contain
-unresolved ChildViews. Row content hashes include the root, nodes and stable key.
+each repeated edge with saturating visit and weighted operation costs. RowsReply
+sums expanded visits and operations across every row root, even when each row
+individually fits. This is performed before materialization. Row trees cannot
+register callbacks or contain ChildViews, including a ChildView with no child
+payload. Row content hashes include the root, nodes and stable key.
 
 ## Concrete protocol-1 representations
 

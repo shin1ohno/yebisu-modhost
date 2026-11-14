@@ -492,7 +492,7 @@ struct Graph<'a> {
     roots: Vec<usize>,
 }
 impl Graph<'_> {
-    fn validate(&self, allow_callbacks: bool) -> Result<()> {
+    fn validate(&self, allow_callbacks: bool) -> Result<(usize, usize)> {
         ceiling(self.nodes.len(), limits::NODES, "nodes")?;
         let mut stored = 0usize;
         let mut callbacks = 0usize;
@@ -564,7 +564,7 @@ impl Graph<'_> {
         if colors.contains(&0) {
             return Err(Error::Invalid("unreachable node"));
         }
-        Ok(())
+        Ok((visits, ops))
     }
 }
 fn local_edges(node: &Node, offset: usize, count: usize) -> Result<Vec<usize>> {
@@ -587,15 +587,22 @@ impl Snapshot {
         validate_single_tree(&self.nodes, self.root, tables, true)
     }
 }
-fn validate_single_tree_shape(nodes: &[Node], root: usize, callbacks: bool) -> Result<()> {
+fn validate_single_tree_shape(
+    nodes: &[Node],
+    root: usize,
+    callbacks: bool,
+) -> Result<(usize, usize)> {
     let edges = nodes
         .iter()
         .map(|n| local_edges(n, 0, nodes.len()))
         .collect::<Result<Vec<_>>>()?;
-    if nodes.iter().any(|n| n.child_view.is_some()) {
+    if nodes
+        .iter()
+        .any(|n| n.component == Component::ChildView || n.child_view.is_some())
+    {
         return Err(Error::Invalid("unresolved child view"));
     }
-    Graph {
+    let cost = Graph {
         nodes: nodes.iter().collect(),
         edges,
         roots: vec![root],
@@ -606,7 +613,7 @@ fn validate_single_tree_shape(nodes: &[Node], root: usize, callbacks: bool) -> R
         limits::STRINGS_BYTES,
         "aggregate strings",
     )?;
-    Ok(())
+    Ok(cost)
 }
 fn validate_single_tree(
     nodes: &[Node],
@@ -624,9 +631,10 @@ fn validate_single_tree(
 }
 fn validate_node_payload(
     node: &Node,
+    generation: Counter,
     entities: &BTreeMap<Counter, &EntityCreate>,
     assets: &BTreeMap<&String, &AssetManifest>,
-    lists: &BTreeMap<&String, &ListManifest>,
+    lists: &BTreeMap<(Counter, &String), &ListManifest>,
 ) -> Result<()> {
     if let Some(e) = &node.entity {
         if entities.get(&e.id).is_none_or(|v| v.r#ref != *e) {
@@ -685,7 +693,7 @@ fn validate_node_payload(
         return Err(Error::Invalid("missing asset"));
     }
     if let Some(id) = &node.list_id
-        && !lists.contains_key(id)
+        && !lists.contains_key(&(generation, id))
     {
         return Err(Error::Invalid("list reference"));
     }
@@ -792,7 +800,10 @@ impl Publish {
         let mut lists = BTreeMap::new();
         for m in &self.list_manifests {
             m.validate()?;
-            if lists.insert(&m.list_id, m).is_some() {
+            if lists
+                .insert((m.handler_generation, &m.list_id), m)
+                .is_some()
+            {
                 return Err(Error::Invalid("duplicate list"));
             }
         }
@@ -825,7 +836,7 @@ impl Publish {
                     edges.push(*root);
                     child_roots.insert(*root);
                 }
-                validate_node_payload(node, &entities, &assets, &lists)?;
+                validate_node_payload(node, v.generation, &entities, &assets, &lists)?;
                 graph.nodes.push(node);
                 graph.edges.push(edges);
             }
@@ -910,7 +921,7 @@ pub struct RowValidation<'a> {
     tables: &'a ValidationTables,
     entities: BTreeMap<Counter, &'a EntityCreate>,
     assets: BTreeMap<&'a String, &'a AssetManifest>,
-    lists: BTreeMap<&'a String, &'a ListManifest>,
+    lists: BTreeMap<(Counter, &'a String), &'a ListManifest>,
 }
 impl<'a> RowValidation<'a> {
     pub fn new(publish: &'a Publish, tables: &'a ValidationTables) -> Result<Self> {
@@ -927,7 +938,7 @@ impl<'a> RowValidation<'a> {
             lists: publish
                 .list_manifests
                 .iter()
-                .map(|m| (&m.list_id, m))
+                .map(|m| ((m.handler_generation, &m.list_id), m))
                 .collect(),
         })
     }
@@ -955,11 +966,16 @@ impl RowsReply {
         )?;
         let mut keys = BTreeSet::new();
         let (mut nodes, mut ops) = (0usize, 0usize);
+        let (mut visits, mut expanded_ops) = (0usize, 0usize);
         for row in &self.rows {
             if !keys.insert(&row.key) {
                 return Err(Error::Invalid("duplicate row key"));
             }
-            validate_single_tree_shape(&row.nodes, row.root, false)?;
+            let (v, w) = validate_single_tree_shape(&row.nodes, row.root, false)?;
+            visits = visits.saturating_add(v).min(limits::VISITS + 1);
+            expanded_ops = expanded_ops.saturating_add(w).min(limits::EXPANDED_OPS + 1);
+            ceiling(visits, limits::VISITS, "expanded visits")?;
+            ceiling(expanded_ops, limits::EXPANDED_OPS, "expanded ops")?;
             if canonical_digest(row, "content_hash")? != row.content_hash {
                 return Err(Error::DigestMismatch);
             }
@@ -977,13 +993,19 @@ impl RowsReply {
         manifest: &ListManifest,
         context: &RowValidation<'_>,
     ) -> Result<()> {
-        if context.lists.get(&manifest.list_id).copied() != Some(manifest)
+        if context
+            .lists
+            .get(&(request.view_generation, &manifest.list_id))
+            .copied()
+            != Some(manifest)
             || request.view_generation != manifest.handler_generation
-            || !context
-                .publish
-                .views_full
-                .iter()
-                .any(|v| v.generation == request.view_generation)
+            || !context.publish.views_full.iter().any(|v| {
+                v.generation == request.view_generation
+                    && v.nodes.iter().any(|node| {
+                        matches!(node.component, Component::List | Component::VirtualList)
+                            && node.list_id.as_ref() == Some(&request.list_id)
+                    })
+            })
         {
             return Err(Error::Stale("rows publication context"));
         }
@@ -1004,7 +1026,13 @@ impl RowsReply {
         self.validate_shape()?;
         for row in &self.rows {
             for node in &row.nodes {
-                validate_node_payload(node, &context.entities, &context.assets, &context.lists)?;
+                validate_node_payload(
+                    node,
+                    request.view_generation,
+                    &context.entities,
+                    &context.assets,
+                    &context.lists,
+                )?;
                 for op in &node.ops {
                     context.tables.validate_op(op)?;
                 }
