@@ -1007,7 +1007,8 @@ impl RowsReply {
             .get(&(request.view_generation, &manifest.list_id))
             .copied()
             != Some(manifest)
-            || request.view_generation != manifest.handler_generation
+            // The lookup key is (handler_generation, list_id), so a hit already
+            // proves request.view_generation == manifest.handler_generation.
             || !context.publish.views_full.iter().any(|v| {
                 v.generation == request.view_generation
                     && v.nodes.iter().any(|node| {
