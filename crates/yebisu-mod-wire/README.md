@@ -37,7 +37,9 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
    containing the List/VirtualList node. The same ID can appear in different
    view generations, but duplicate manifests for the same pair are rejected.
    Rows require the matching list node in the requested view; an unused manifest
-   alone does not authorize delivery. Row list references use that same generation.
+   alone does not authorize delivery. Rows cannot contain List/VirtualList nodes
+   or any list reference: a list drawn inside a row is not owned by an adopted
+   view node, so no RowsRequest for it could ever be valid (A7).
    Authenticate the reply envelope with
    `ReceiveContext` before checking the outstanding request. No request identity is inferred
    from an ID alone. A missing entity never substitutes for a release tombstone;
@@ -56,8 +58,8 @@ in one graph. It rejects cycles, unreachable nodes and bad indexes, and counts
 each repeated edge with saturating visit and weighted operation costs. RowsReply
 sums expanded visits and operations across every row root, even when each row
 individually fits. This is performed before materialization. Row trees cannot
-register callbacks or contain ChildViews, including a ChildView with no child
-payload. Row content hashes include the root, nodes and stable key.
+register callbacks or contain ChildViews (including a ChildView with no child
+payload) or nested lists. Row content hashes include the root, nodes and stable key.
 
 ## Concrete protocol-1 representations
 

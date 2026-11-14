@@ -1475,16 +1475,15 @@ fn rows_resolve_component_entity_asset_list_and_op_references_in_current_copy() 
     check(&mut reply).unwrap();
     reply.rows[0].nodes[0].asset.as_mut().unwrap().digest = bytes_digest(b"other");
     assert_eq!(check(&mut reply), Err(Error::Invalid("asset reference")));
+    // A7: rows cannot own lists, so every list reference in a row is rejected,
+    // including one that names the adopted list itself.
     reply.rows[0].nodes[0] = node();
     reply.rows[0].nodes[0].component = Component::VirtualList;
-    assert_eq!(
-        check(&mut reply),
-        Err(Error::Invalid("missing list manifest"))
-    );
+    assert_eq!(check(&mut reply), Err(Error::Invalid("nested list in row")));
     reply.rows[0].nodes[0].list_id = Some("list".into());
-    check(&mut reply).unwrap();
+    assert_eq!(check(&mut reply), Err(Error::Invalid("nested list in row")));
     reply.rows[0].nodes[0].list_id = Some("other-copy-list".into());
-    assert_eq!(check(&mut reply), Err(Error::Invalid("list reference")));
+    assert_eq!(check(&mut reply), Err(Error::Invalid("nested list in row")));
     reply.rows[0].nodes[0] = node();
     reply.rows[0].nodes[0].component = Component::TextView;
     assert_eq!(check(&mut reply), Err(Error::Invalid("TextView payload")));
@@ -2722,17 +2721,16 @@ fn row_list_references_cannot_use_another_view_generation() {
     let tables = ValidationTables::default();
     let context = RowValidation::new(&p, &tables).unwrap();
     let (request, mut reply) = rows();
-    reply.rows[0].nodes[0] = list_node("list");
-    rehash(&mut reply);
-    reply
-        .validate_against(&request, &p.list_manifests[0], &context)
-        .unwrap();
-    reply.rows[0].nodes[0].list_id = Some("other-list".into());
-    rehash(&mut reply);
-    assert_eq!(
-        reply.validate_against(&request, &p.list_manifests[0], &context),
-        Err(Error::Invalid("list reference"))
-    );
+    // Rows cannot draw lists at all (A7), so neither this generation's list nor
+    // another generation's list can be referenced from a row.
+    for id in ["list", "other-list"] {
+        reply.rows[0].nodes[0] = list_node(id);
+        rehash(&mut reply);
+        assert_eq!(
+            reply.validate_against(&request, &p.list_manifests[0], &context),
+            Err(Error::Invalid("nested list in row"))
+        );
+    }
 }
 
 fn assert_row_child_view_rejected(reply: &mut RowsReply) {
@@ -2780,5 +2778,81 @@ fn rows_reject_child_view_inside_slots_and_state_styles() {
             ..node()
         });
         assert_row_child_view_rejected(&mut reply);
+    }
+}
+
+fn assert_row_nested_list_rejected(reply: &mut RowsReply, context: &RowValidation<'_>) {
+    rehash(reply);
+    let (request, _) = rows();
+    let expected = Error::Invalid("nested list in row");
+    assert_eq!(reply.validate_shape(), Err(expected.clone()));
+    assert_eq!(encode(&envelope(reply.clone())), Err(expected.clone()));
+    let bytes = serde_json::to_vec(&envelope(reply.clone())).unwrap();
+    assert_eq!(decode::<RowsReply>(&bytes), Err(expected.clone()));
+    assert_eq!(
+        reply.validate_against(&request, &list(), context),
+        Err(expected)
+    );
+}
+
+#[test]
+fn rows_reject_nested_lists_that_could_never_receive_rows() {
+    // The adopted view draws "list"; a manifest for "nested" also exists in the
+    // same generation. A row drawing "nested" used to be accepted, while every
+    // RowsRequest for "nested" was Stale because no adopted view node owns it.
+    let mut p = publish();
+    p.views_full[0].nodes[0] = list_node("list");
+    p.list_manifests = vec![
+        list(),
+        ListManifest {
+            list_id: "nested".into(),
+            ..list()
+        },
+    ];
+    let tables = ValidationTables::default();
+    p.validate(&tables).unwrap();
+    let context = RowValidation::new(&p, &tables).unwrap();
+    let (request, mut nested_reply) = rows();
+    let nested_request = RowsRequest {
+        list_id: "nested".into(),
+        ..request
+    };
+    nested_reply.list_id = "nested".into();
+    assert_eq!(
+        nested_reply.validate_against(&nested_request, &p.list_manifests[1], &context),
+        Err(Error::Stale("rows publication context"))
+    );
+
+    let (_, plain) = rows();
+    plain
+        .validate_against(&rows().0, &list(), &context)
+        .unwrap();
+    for component in [Component::List, Component::VirtualList] {
+        let mut reply = plain.clone();
+        reply.rows[0].nodes[0] = Node {
+            component,
+            ..list_node("nested")
+        };
+        assert_row_nested_list_rejected(&mut reply, &context);
+    }
+    // A list reference on any other component is rejected as well.
+    let mut reply = plain.clone();
+    reply.rows[0].nodes[0].list_id = Some("nested".into());
+    assert_row_nested_list_rejected(&mut reply, &context);
+    // Lists reached through slots and state styles are part of the row tree.
+    for op in [
+        Op::Slot {
+            name: "content".into(),
+            node: 1,
+        },
+        Op::StateStyle {
+            name: StateStyle::Hover,
+            node: 1,
+        },
+    ] {
+        let mut reply = plain.clone();
+        reply.rows[0].nodes[0].ops.push(op);
+        reply.rows[0].nodes.push(list_node("nested"));
+        assert_row_nested_list_rejected(&mut reply, &context);
     }
 }
