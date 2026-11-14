@@ -4,7 +4,11 @@
   - Description: migrate retained View parent references, create a matching View
     entity for every snapshot, allocate copy-wide generations, register action
     names, supply RowValidation from the adopted copy, and construct all new
-    handshake, ActionData and Overlay fields. Implement GatewayRequest/Reply
+    handshake, ActionData and Overlay fields. Attach a VirtualScroll entity to
+    every VirtualList/List node with a manifest of the matching kind (the runner
+    branch's capture.rs emits VirtualList without one), send Publish and asset
+    bytes as raw data-channel chunks named by PublishBegin/AssetReply.channel,
+    and put normalize_url output in DeviceRequest. Implement GatewayRequest/Reply
     routing and explicit device-permission hand-off with the receiver's policy,
     target, ownership, expiry and one-use checks.
   - Reason: PR #2 is a separate stacked runner change; this wire correction owns
