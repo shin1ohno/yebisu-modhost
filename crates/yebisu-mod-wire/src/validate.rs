@@ -971,6 +971,15 @@ impl RowsReply {
             if !keys.insert(&row.key) {
                 return Err(Error::Invalid("duplicate row key"));
             }
+            // A7: list identity is (copy incarnation, view generation, list_id) and
+            // rows cannot register handlers, so a list drawn inside a row could never
+            // own a valid RowsRequest. Reject it instead of leaving it empty forever.
+            if row.nodes.iter().any(|n| {
+                matches!(n.component, Component::List | Component::VirtualList)
+                    || n.list_id.is_some()
+            }) {
+                return Err(Error::Invalid("nested list in row"));
+            }
             let (v, w) = validate_single_tree_shape(&row.nodes, row.root, false)?;
             visits = visits.saturating_add(v).min(limits::VISITS + 1);
             expanded_ops = expanded_ops.saturating_add(w).min(limits::EXPANDED_OPS + 1);
@@ -998,7 +1007,8 @@ impl RowsReply {
             .get(&(request.view_generation, &manifest.list_id))
             .copied()
             != Some(manifest)
-            || request.view_generation != manifest.handler_generation
+            // The lookup key is (handler_generation, list_id), so a hit already
+            // proves request.view_generation == manifest.handler_generation.
             || !context.publish.views_full.iter().any(|v| {
                 v.generation == request.view_generation
                     && v.nodes.iter().any(|node| {
