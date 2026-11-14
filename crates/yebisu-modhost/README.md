@@ -65,12 +65,21 @@ The native headless integration test exercises a real JS timer, `cx.notify`,
 draw and the wire-decoded text from initial state 0 through state 3. It also
 checks a layout callback and rejects a valid frame under a mismatched receiving
 session. Native Input fixtures also verify Japanese/emoji and mixed-accent cursor
-positions and Input-only value/config/selection timer updates received without
-a parent rebuild.
+positions, Input-only value/config/selection updates and subscription-only
+changes received without a parent rebuild, and an empty VirtualList received
+with a list manifest keyed by its view generation.
 A missing mod must fail before starting the application.
 
+The Input and VirtualList tests read publications as they arrive and end on the
+publication they wait for; the runner's duration is only an upper bound. Their
+fixtures start changing state after the first frame was laid out, and no
+assertion depends on which changes share a frame: the runner merges every change
+made before its next frame into one publication, so wall-clock spacing between
+changes cannot decide how many publications a loaded host produces.
+
 Each publication writes `.frames` (bounded wire frames carrying zstd-compressed
-wire JSON), `.identity.json` (offline expected receiving context), `.publish.json`
+wire JSON, renamed into place after its sidecars, so a reader that sees it sees
+the whole publication), `.identity.json` (offline expected receiving context), `.publish.json`
 and `.tree` diagnostics, plus SVG assets by digest. Verify a capture with
 `yebisu-modhost inspect /scratch/capture/reviewer-0001.frames`; this independently
 reassembles, decompresses and validates the envelope and asset bytes. The local

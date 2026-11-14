@@ -86,109 +86,130 @@ fn timer_changes_are_received_and_an_invalid_mod_fails() {
     assert!(String::from_utf8_lossy(&bad.stderr).contains("missing main.js"));
 }
 
-fn input_captures(script: &str) -> Vec<serde_json::Value> {
-    use std::{fs, process::Command};
+/// The runner's lifetime when a test ends on an observed publication instead.
+/// A passing run stops as soon as its condition holds; only a failing one
+/// waits this long.
+const RUN_BOUND_SECONDS: &str = "30";
+
+fn inspect_capture(path: &std::path::Path) -> serde_json::Value {
+    let received = std::process::Command::new(env!("CARGO_BIN_EXE_yebisu-modhost"))
+        .arg("inspect")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        received.status.success(),
+        "{}: {}",
+        path.display(),
+        String::from_utf8_lossy(&received.stderr)
+    );
+    serde_json::from_slice(&received.stdout).unwrap()
+}
+
+/// Run one mod and read its publications as they arrive, until `done`
+/// accepts the ones received so far. The test therefore waits on what the
+/// receiver observes, never on how long the runner takes to get there.
+fn captures_until(
+    script: &str,
+    done: impl Fn(&[serde_json::Value]) -> bool,
+) -> Vec<serde_json::Value> {
+    use std::{fs, process::Command, time::Duration};
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
     let module = home.join("mods/input");
     fs::create_dir_all(&module).unwrap();
     fs::write(module.join("main.js"), script).unwrap();
     let output = root.path().join("snapshots");
-    let run = Command::new(env!("CARGO_BIN_EXE_yebisu-modhost"))
+    let stderr = root.path().join("stderr.log");
+    let mut runner = Command::new(env!("CARGO_BIN_EXE_yebisu-modhost"))
         .args([
             home.to_str().unwrap(),
             output.to_str().unwrap(),
-            "2",
+            RUN_BOUND_SECONDS,
             "input",
         ])
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
-        .output()
+        .stdout(std::process::Stdio::null())
+        .stderr(fs::File::create(&stderr).unwrap())
+        .spawn()
         .unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    let mut paths: Vec<_> = fs::read_dir(&output)
-        .unwrap()
-        .map(|f| f.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "frames"))
-        .collect();
-    paths.sort();
-    assert!(!paths.is_empty(), "no Input publication received");
-    // Inspect the actual wire bytes, without the diagnostic JSON sidecar.
-    for path in &paths {
-        fs::remove_file(path.with_extension("publish.json")).unwrap();
-    }
-    paths
-        .iter()
-        .map(|path| {
-            let received = Command::new(env!("CARGO_BIN_EXE_yebisu-modhost"))
-                .arg("inspect")
-                .arg(path)
-                .output()
-                .unwrap();
-            assert!(
-                received.status.success(),
-                "{}",
-                String::from_utf8_lossy(&received.stderr)
+    let mut captures = Vec::new();
+    loop {
+        // Read the exit status before the directory: after an exit, this
+        // scan sees every publication the runner wrote.
+        let exited = runner.try_wait().unwrap();
+        let mut paths: Vec<_> = match fs::read_dir(&output) {
+            Ok(entries) => entries
+                .map(|f| f.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|e| e == "frames"))
+                .collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("{error}"),
+        };
+        paths.sort();
+        // Frames files are renamed into place, so each one is complete.
+        for path in paths.iter().skip(captures.len()) {
+            // Inspect the actual wire bytes, without the diagnostic JSON sidecar.
+            fs::remove_file(path.with_extension("publish.json")).unwrap();
+            captures.push(inspect_capture(path));
+        }
+        if done(&captures) {
+            // An exited runner was already reaped by try_wait.
+            if exited.is_none() {
+                runner.kill().unwrap();
+                runner.wait().unwrap();
+            }
+            return captures;
+        }
+        if let Some(status) = exited {
+            panic!(
+                "runner ended ({status}) before the expected publication; received {captures:#?}\n{}",
+                fs::read_to_string(&stderr).unwrap()
             );
-            serde_json::from_slice(&received.stdout).unwrap()
-        })
-        .collect()
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn retained_input(capture: &serde_json::Value) -> &serde_json::Value {
+    capture["retained_entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entity| entity["ref"]["kind"] == "Input")
+        .unwrap()
 }
 
 #[test]
 fn retained_input_subscriptions_publish_without_parent_notify() {
-    let captures = input_captures(include_str!("fixtures/subscriptions/main.js"));
-    let inputs: Vec<_> = captures
-        .iter()
-        .map(|capture| {
-            capture["retained_entities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|entity| entity["ref"]["kind"] == "Input")
-                .unwrap()
-        })
-        .collect();
-    // The final config change is a positive control: registration succeeded
-    // even if a broken subscription path never woke the frame driver.
-    assert_eq!(
-        inputs.last().unwrap()["subscriptions"]["events"],
-        serde_json::json!(["change", "submit"])
-    );
-    let states: Vec<_> = inputs
-        .iter()
-        .map(|input| {
-            (
-                input["subscriptions"]["events"].clone(),
-                input["config"]["masked"].clone(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        states,
-        vec![
-            (serde_json::json!([]), serde_json::json!(false)),
-            (serde_json::json!(["change"]), serde_json::json!(false)),
-            (
-                serde_json::json!(["change", "submit"]),
-                serde_json::json!(false)
-            ),
-            (
-                serde_json::json!(["change", "submit"]),
-                serde_json::json!(true)
-            ),
-        ],
-        "subscription-only changes must publish; duplicate subscriptions and unchanged wakes must not"
-    );
+    use serde_json::json;
+    let all = json!(["change", "submit"]);
+    // Without a frame request from the subscription itself, nothing after the
+    // first frame publishes these events, and the run ends unmet.
+    let captures = captures_until(include_str!("fixtures/subscriptions/main.js"), |captures| {
+        captures
+            .last()
+            .is_some_and(|c| retained_input(c)["subscriptions"]["events"] == all)
+    });
+    let inputs: Vec<_> = captures.iter().map(retained_input).collect();
+    // The fixture starts changing the Input only after the first frame was
+    // laid out, so the first publication shows it untouched.
+    assert_eq!(inputs[0]["subscriptions"]["events"], json!([]));
+    assert_eq!(inputs[0]["config"]["masked"], json!(false));
+    let all = all.as_array().unwrap();
     let mut previous_rev = 0;
-    for (capture, input) in captures.iter().zip(&inputs) {
-        assert_eq!(capture["texts"], serde_json::json!(["render=1"]));
-        assert_eq!(input["ref"], inputs[0]["ref"]);
+    for (index, (capture, input)) in captures.iter().zip(&inputs).enumerate() {
+        let events = input["subscriptions"]["events"].as_array().unwrap();
+        assert_eq!(
+            events[..],
+            all[..events.len()],
+            "events are registered in order, once each"
+        );
+        assert_eq!(input["config"], inputs[0]["config"]);
         assert_eq!(input["state"], inputs[0]["state"]);
+        assert_eq!(input["ref"], inputs[0]["ref"]);
+        assert_eq!(capture["texts"], json!(["render=1"]));
         assert_eq!(input["rev"], capture["state_rev"]);
         let revision = capture["state_rev"]
             .as_str()
@@ -197,12 +218,50 @@ fn retained_input_subscriptions_publish_without_parent_notify() {
             .unwrap();
         assert!(revision > previous_rev);
         previous_rev = revision;
+        // Config and state never change here, so every publication must add
+        // an event: the masked setter's wake and the duplicate subscription
+        // must not publish on their own.
+        if index > 0 {
+            let before = inputs[index - 1]["subscriptions"]["events"]
+                .as_array()
+                .unwrap();
+            assert!(
+                events.len() > before.len(),
+                "publication {index} repeats the previous Input: {captures:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn empty_virtual_list_is_received_with_its_view_generation() {
+    use serde_json::json;
+    let captures = captures_until(include_str!("fixtures/virtual_list/main.js"), |captures| {
+        captures.iter().any(|c| c["texts"] == json!(["n=1"]))
+    });
+    assert_eq!(captures[0]["texts"], json!(["n=0"]));
+    assert_eq!(captures.last().unwrap()["texts"], json!(["n=1"]));
+    for capture in &captures {
+        // div, VirtualList and the text node.
+        assert_eq!(capture["nodes"], 3);
+        let generation = &capture["generation"];
+        assert_eq!(
+            capture["list_manifests"],
+            json!([{
+                "list_id": "probe-list",
+                "content_rev": generation,
+                "kind": "virtual",
+                "item_count": 0,
+                "sizes_or_estimate": {"kind": "Sizes", "value": []},
+                "handler_generation": generation,
+            }])
+        );
     }
 }
 
 #[test]
 fn unicode_input_selections_are_received_as_utf8_bytes() {
-    let captures = input_captures(include_str!("fixtures/unicode/main.js"));
+    let captures = captures_until(include_str!("fixtures/unicode/main.js"), |c| !c.is_empty());
     let inputs: Vec<_> = captures[0]["retained_entities"]
         .as_array()
         .unwrap()
@@ -218,54 +277,50 @@ fn unicode_input_selections_are_received_as_utf8_bytes() {
 
 #[test]
 fn retained_input_host_set_publishes_without_parent_notify() {
-    let captures = input_captures(include_str!("fixtures/hostset/main.js"));
-    let input = |capture: &serde_json::Value| {
-        capture["retained_entities"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|e| e["ref"]["kind"] == "Input")
-            .unwrap()
-            .clone()
-    };
-    let before = &captures[0];
-    assert_eq!(input(before)["state"]["text"], "before");
-    let after = captures
-        .iter()
-        .find(|c| input(c)["state"]["text"] == "after😀")
-        .expect("retained Input update never reached the wire receiver");
-    assert_eq!(before["texts"], serde_json::json!(["render=1"]));
-    assert_eq!(
-        after["texts"], before["texts"],
-        "parent unexpectedly rebuilt"
-    );
+    use serde_json::json;
+    let fixture = include_str!("fixtures/hostset/main.js");
+    assert!(fixture.contains("/*SETTER*/"));
     let rev = |v: &serde_json::Value| v.as_str().unwrap().parse::<u64>().unwrap();
-    assert!(rev(&after["state_rev"]) > rev(&before["state_rev"]));
-    assert!(rev(&input(after)["rev"]) > rev(&input(before)["rev"]));
-    assert_eq!(input(after)["rev"], after["state_rev"]);
-    assert_eq!(input(after)["ref"], input(before)["ref"]);
-    assert_eq!(input(after)["state"]["selection"]["end"], "after😀".len());
-    let masked = captures
-        .iter()
-        .find(|c| input(c)["config"]["masked"] == true)
-        .expect("retained Input config update never reached the receiver");
-    assert!(rev(&masked["state_rev"]) > rev(&after["state_rev"]));
-    let selected = captures
-        .iter()
-        .find(|c| input(c)["state"]["selection"]["end"] == 5)
-        .expect("retained Input selection update never reached the receiver");
-    assert_eq!(input(selected)["state"]["selection"]["start"], 0);
-    assert!(rev(&selected["state_rev"]) > rev(&masked["state_rev"]));
-    for capture in &captures {
-        assert_eq!(
-            capture["texts"], before["texts"],
-            "parent unexpectedly rebuilt"
-        );
-        assert_eq!(input(capture)["rev"], capture["state_rev"]);
+    // Each setter runs alone: if it did not request a frame itself, nothing
+    // else would publish its change and the run would end unmet.
+    for (setter, field, expected) in [
+        (
+            r#"this.input.set_value("after😀")"#,
+            "/state/text",
+            json!("after😀"),
+        ),
+        ("this.input.set_masked(true)", "/config/masked", json!(true)),
+        (
+            "this.input.set_selected_range({start: 0, end: 5})",
+            "/state/selection/end",
+            json!(5),
+        ),
+    ] {
+        let captures = captures_until(&fixture.replace("/*SETTER*/", setter), |captures| {
+            captures
+                .last()
+                .is_some_and(|c| retained_input(c).pointer(field) == Some(&expected))
+        });
+        assert_eq!(captures.len(), 2, "{setter}: {captures:#?}");
+        let (before, after) = (retained_input(&captures[0]), retained_input(&captures[1]));
+        assert_eq!(before["state"]["text"], "before", "{setter}");
+        assert_eq!(before["config"]["masked"], false, "{setter}");
+        if setter.contains("set_value") {
+            assert_eq!(after["state"]["selection"]["end"], "after😀".len());
+        }
+        if setter.contains("set_selected_range") {
+            assert_eq!(after["state"]["selection"]["start"], 0);
+        }
+        for capture in &captures {
+            assert_eq!(
+                capture["texts"],
+                json!(["render=1"]),
+                "{setter}: parent unexpectedly rebuilt"
+            );
+            assert_eq!(retained_input(capture)["rev"], capture["state_rev"]);
+        }
+        assert!(rev(&captures[1]["state_rev"]) > rev(&captures[0]["state_rev"]));
+        assert!(rev(&after["rev"]) > rev(&before["rev"]));
+        assert_eq!(after["ref"], before["ref"]);
     }
-    assert_eq!(
-        captures.len(),
-        4,
-        "unchanged frames must not create more publications"
-    );
 }

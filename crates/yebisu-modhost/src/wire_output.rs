@@ -140,7 +140,12 @@ pub fn write(
             .encode()?,
         );
     }
-    std::fs::write(prefix.with_extension("frames"), frames)?;
+    // The frames file is the last one written for a publication; renaming it
+    // into place means a receiver that sees it also sees complete bytes and
+    // complete sidecars.
+    let partial = prefix.with_extension("frames.partial");
+    std::fs::write(&partial, frames)?;
+    std::fs::rename(&partial, prefix.with_extension("frames"))?;
     Ok(())
 }
 
@@ -201,6 +206,6 @@ pub fn inspect(path: &Path) -> Result<Value> {
         );
     }
     Ok(
-        json!({"file":path,"scope":received.scope,"generation":received.body.pub_rev,"nodes":received.body.views_full.iter().map(|v|v.nodes.len()).sum::<usize>(),"texts":received.body.views_full.iter().flat_map(|v|v.nodes.iter().filter_map(|n|n.text.as_deref())).collect::<Vec<_>>(),"entities":received.body.entities_full.len(),"retained_entities":received.body.entities_full,"state_rev":received.body.wm.state_rev,"assets":received.body.asset_manifests.len(),"compressed_bytes":compressed.len(),"json_bytes":json_bytes.len()}),
+        json!({"file":path,"scope":received.scope,"generation":received.body.pub_rev,"nodes":received.body.views_full.iter().map(|v|v.nodes.len()).sum::<usize>(),"texts":received.body.views_full.iter().flat_map(|v|v.nodes.iter().filter_map(|n|n.text.as_deref())).collect::<Vec<_>>(),"entities":received.body.entities_full.len(),"retained_entities":received.body.entities_full,"state_rev":received.body.wm.state_rev,"list_manifests":received.body.list_manifests,"assets":received.body.asset_manifests.len(),"compressed_bytes":compressed.len(),"json_bytes":json_bytes.len()}),
     )
 }
