@@ -62,7 +62,6 @@ fn message_limit(kind: MessageKind) -> usize {
     match kind {
         MessageKind::Publish => limits::PUBLISH_BYTES,
         MessageKind::RowsReply => limits::ROWS_BYTES,
-        MessageKind::AssetReply => limits::IMAGE_BYTES + limits::CONTROL_BYTES,
         _ => limits::CONTROL_BYTES,
     }
 }

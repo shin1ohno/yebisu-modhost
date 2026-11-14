@@ -72,3 +72,24 @@ macro_rules! bool_type {
 }
 bool_type!(True, true);
 bool_type!(False, false);
+/// `BgGrant.format`: protocol 1 records carry exactly `1`. A record with an
+/// unknown format is corrupt (appendix A14) and fails to decode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GrantFormat;
+impl GrantFormat {
+    pub const VALUE: u32 = 1;
+}
+impl Serialize for GrantFormat {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u32(Self::VALUE)
+    }
+}
+impl<'de> Deserialize<'de> for GrantFormat {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        if u32::deserialize(d)? == Self::VALUE {
+            Ok(Self)
+        } else {
+            Err(D::Error::custom("unknown BgGrant format"))
+        }
+    }
+}

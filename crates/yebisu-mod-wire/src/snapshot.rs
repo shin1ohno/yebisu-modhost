@@ -428,13 +428,19 @@ pub struct PublishBegin {
     pub total_bytes: usize,
     pub chunk_count: usize,
     pub digest: Digest,
+    /// Data channel (never 0) that carries this publication's raw chunks.
+    pub channel: u32,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PublishChunk {
-    pub index: usize,
+/// A numbered fragment of a large transfer. It is not a JSON message: it travels
+/// as the payload of one DATA frame on the transfer's data channel, encoded as
+/// `[index u32 LE][bytes]` (see `DataChunk::to_frame`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataChunk {
+    pub index: u32,
     pub bytes: Vec<u8>,
 }
+/// Publish fragments use the common data-chunk layout.
+pub type PublishChunk = DataChunk;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublishCommit {
@@ -522,7 +528,11 @@ pub struct AssetRequest {
 pub struct AssetReply {
     pub request_id: String,
     pub asset: AssetRef,
-    pub bytes: Vec<u8>,
+    /// The encoded asset follows as `chunk_count` raw chunks on this data channel
+    /// (never 0); `asset.digest` covers the assembled bytes.
+    pub channel: u32,
+    pub total_bytes: usize,
+    pub chunk_count: usize,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
