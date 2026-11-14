@@ -864,9 +864,12 @@ impl EntityStore {
                 | Record::Editor { subscriptions, .. },
             ) => {
                 subscriptions.push(subscription);
-                if let Some(Record::Input { events, .. }) = self.record_mut(handle) {
+                if let Some(Record::Input { events, state, .. }) = self.record_mut(handle) {
                     if !events.contains(&event) {
                         events.push(event);
+                        // YEBISU: the event table is retained state; request a
+                        // frame for windows showing this input, not its parent.
+                        cx.notify(state.entity_id());
                     }
                 }
                 true

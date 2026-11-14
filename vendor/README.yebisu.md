@@ -26,7 +26,9 @@ Only these copies change from the reference:
 - shell/view.rs: read access to the retained input, its registered events,
   focus handle and native scroll state. No JS execution API is exposed.
 - shell/entities.rs: retain the names of registered input events alongside
-  their existing subscriptions; no event is emitted by export.
+  their existing subscriptions; no event is emitted by export. A newly added
+  event name notifies the input entity, so the windows rendering it get a frame
+  without rebuilding the owning view; a repeated name does not notify.
 - base/input/base/state.rs: read the active selection in UTF-16 units.
 - gpui-pre/window.rs: install a headless wake callback and drive one bounded
   draw/layout/arena-clear/callback cycle. The callback batch is taken before

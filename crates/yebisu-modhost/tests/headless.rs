@@ -117,6 +117,10 @@ fn input_captures(script: &str) -> Vec<serde_json::Value> {
         .collect();
     paths.sort();
     assert!(!paths.is_empty(), "no Input publication received");
+    // Inspect the actual wire bytes, without the diagnostic JSON sidecar.
+    for path in &paths {
+        fs::remove_file(path.with_extension("publish.json")).unwrap();
+    }
     paths
         .iter()
         .map(|path| {
@@ -133,6 +137,67 @@ fn input_captures(script: &str) -> Vec<serde_json::Value> {
             serde_json::from_slice(&received.stdout).unwrap()
         })
         .collect()
+}
+
+#[test]
+fn retained_input_subscriptions_publish_without_parent_notify() {
+    let captures = input_captures(include_str!("fixtures/subscriptions/main.js"));
+    let inputs: Vec<_> = captures
+        .iter()
+        .map(|capture| {
+            capture["retained_entities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entity| entity["ref"]["kind"] == "Input")
+                .unwrap()
+        })
+        .collect();
+    // The final config change is a positive control: registration succeeded
+    // even if a broken subscription path never woke the frame driver.
+    assert_eq!(
+        inputs.last().unwrap()["subscriptions"]["events"],
+        serde_json::json!(["change", "submit"])
+    );
+    let states: Vec<_> = inputs
+        .iter()
+        .map(|input| {
+            (
+                input["subscriptions"]["events"].clone(),
+                input["config"]["masked"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        states,
+        vec![
+            (serde_json::json!([]), serde_json::json!(false)),
+            (serde_json::json!(["change"]), serde_json::json!(false)),
+            (
+                serde_json::json!(["change", "submit"]),
+                serde_json::json!(false)
+            ),
+            (
+                serde_json::json!(["change", "submit"]),
+                serde_json::json!(true)
+            ),
+        ],
+        "subscription-only changes must publish; duplicate subscriptions and unchanged wakes must not"
+    );
+    let mut previous_rev = 0;
+    for (capture, input) in captures.iter().zip(&inputs) {
+        assert_eq!(capture["texts"], serde_json::json!(["render=1"]));
+        assert_eq!(input["ref"], inputs[0]["ref"]);
+        assert_eq!(input["state"], inputs[0]["state"]);
+        assert_eq!(input["rev"], capture["state_rev"]);
+        let revision = capture["state_rev"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!(revision > previous_rev);
+        previous_rev = revision;
+    }
 }
 
 #[test]
