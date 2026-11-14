@@ -17,6 +17,19 @@ pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Entity ids at or above this bit exist only on the wire: the root View and the
+/// scroll position of a VirtualList the script does not track. Script handles
+/// cross as JS numbers (below 2^53), so they never reach this range.
+const WIRE_ONLY_ENTITY: u64 = 1 << 63;
+
+/// A stable wire-only VirtualScroll id for an untracked list, keyed by its name.
+/// The shell keeps such a list's position under that name, so the id stays the
+/// same across publications. Stays below `u64::MAX`, the root View.
+fn list_scroll_id(list_id: &str) -> u64 {
+    let hash = Sha256::digest(list_id.as_bytes());
+    WIRE_ONLY_ENTITY | (u64::from_be_bytes(hash[..8].try_into().unwrap()) >> 2)
+}
+
 struct Capture<'a> {
     view: &'a ScriptView,
     cx: &'a App,
@@ -92,6 +105,18 @@ impl Capture<'_> {
         };
         self.entities.insert(handle,json!({"ref":reference,"rev":self.revision.to_string(),"config":config,"state":state,"subscriptions":{"rev":"1","events":events}}));
         Ok(reference)
+    }
+
+    /// The VirtualScroll entity of a list the script does not track. The
+    /// prototype publishes only empty lists, which have no rows to scroll, so
+    /// the position is the origin and there is no anchor.
+    fn list_scroll(&mut self, list_id: &str) -> Value {
+        let handle = list_scroll_id(list_id);
+        let reference =
+            json!({"id":handle.to_string(),"incarnation":self.incarnation,"kind":"VirtualScroll"});
+        let entity = json!({"ref":reference,"rev":self.revision.to_string(),"config":{"kind":"VirtualScroll"},"state":{"kind":"VirtualScroll","offset":{"x":0.0,"y":0.0},"anchor_key":"","anchor_index":0,"content_rev":self.revision.to_string(),"request":null},"subscriptions":{"rev":"1","events":[]}});
+        self.entities.entry(handle).or_insert(entity);
+        reference
     }
 
     fn argument(&mut self, name: &str, arg: &Bridged) -> Result<Value> {
@@ -202,10 +227,12 @@ pub fn retained_changed(
         .context("previous entities")?
     {
         let kind = entity["ref"]["kind"].as_str().context("entity kind")?;
-        if kind == "View" {
+        let handle: u64 = entity["ref"]["id"].as_str().context("entity id")?.parse()?;
+        // The root View and untracked list scrolls have no retained shell state;
+        // they change only with a parent rebuild.
+        if handle >= WIRE_ONLY_ENTITY {
             continue;
         }
-        let handle = entity["ref"]["id"].as_str().context("entity id")?.parse()?;
         cap.entity(handle, kind)?;
         if cap.entities.get(&handle) != Some(entity) {
             return Ok(true);
@@ -299,6 +326,22 @@ pub fn publish(
                     "nonempty virtual rows require the later row adapter"
                 );
                 list_id = json!(list.id());
+                // A2: a VirtualList's position lives in a VirtualScroll entity.
+                // Bind the handle the script tracks; otherwise the list's own
+                // name-keyed position, published as a wire-only entity.
+                let tracked = source.ops().iter().find_map(|op| match op {
+                    SpecOp::Method(name, args) if *name == "track_scroll" => Some(args.first()),
+                    _ => None,
+                });
+                entity = match tracked {
+                    Some(Some(Bridged::Number(handle)))
+                        if handle.is_finite() && *handle >= 0. && handle.fract() == 0. =>
+                    {
+                        cap.entity(*handle as u64, "VirtualScroll")?
+                    }
+                    Some(_) => bail!("invalid VirtualList track_scroll handle"),
+                    None => cap.list_scroll(list.id()),
+                };
                 cap.lists.push(json!({"list_id":list.id(),"content_rev":revision.to_string(),"kind":"virtual","item_count":list.sizes().len(),"sizes_or_estimate":{"kind":"Sizes","value":[]},"handler_generation":revision.to_string()}));
                 "VirtualList"
             }

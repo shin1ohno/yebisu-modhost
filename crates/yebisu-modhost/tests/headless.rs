@@ -257,6 +257,85 @@ fn empty_virtual_list_is_received_with_its_view_generation() {
             }])
         );
     }
+    // X6: the list is bound to a VirtualScroll entity. The script tracks no
+    // handle, so the runner publishes the list's own position as a wire-only
+    // entity (id at or above 2^63) whose reference stays the same across
+    // publications.
+    let scroll = list_scroll(&captures[0], "probe-list");
+    assert!(scroll["id"].as_str().unwrap().parse::<u64>().unwrap() >= 1 << 63);
+    for capture in &captures {
+        assert_eq!(list_scroll(capture, "probe-list"), scroll);
+        let state = &retained(capture, &scroll)["state"];
+        assert_eq!(state["offset"], json!({"x": 0.0, "y": 0.0}));
+        assert_eq!(state["content_rev"], capture["generation"]);
+    }
+}
+
+#[test]
+fn tracked_virtual_list_is_bound_to_the_script_scroll_handle() {
+    use serde_json::json;
+    let captures = captures_until(
+        include_str!("fixtures/tracked_virtual_list/main.js"),
+        |captures| captures.iter().any(|c| c["texts"] == json!(["n=1"])),
+    );
+    assert_eq!(captures[0]["texts"], json!(["n=0"]));
+    let scroll = list_scroll(&captures[0], "tracked-list");
+    // A script handle crosses as a JS number, below the wire-only range.
+    assert!(scroll["id"].as_str().unwrap().parse::<u64>().unwrap() < 1 << 53);
+    for capture in &captures {
+        assert_eq!(list_scroll(capture, "tracked-list"), scroll);
+        let entity = retained(capture, &scroll);
+        assert_eq!(entity["config"], json!({"kind": "VirtualScroll"}));
+        assert_eq!(entity["state"]["kind"], "VirtualScroll");
+    }
+}
+
+#[test]
+fn retained_change_beside_an_untracked_list_publishes_without_parent_notify() {
+    use serde_json::json;
+    // The comparison with the previous publication must skip the list's
+    // wire-only scroll entity, which has no retained shell state to read.
+    let captures = captures_until(include_str!("fixtures/list_hostset/main.js"), |captures| {
+        captures
+            .last()
+            .is_some_and(|c| retained_input(c)["state"]["text"] == "after")
+    });
+    assert_eq!(captures.len(), 2, "{captures:#?}");
+    assert_eq!(retained_input(&captures[0])["state"]["text"], "before");
+    for capture in &captures {
+        assert_eq!(capture["texts"], json!(["render=1"]), "parent rebuilt");
+    }
+    assert_eq!(
+        list_scroll(&captures[0], "host-list"),
+        list_scroll(&captures[1], "host-list")
+    );
+}
+
+/// The entity reference the receiver read on the node carrying `list_id`.
+fn list_scroll(capture: &serde_json::Value, list_id: &str) -> serde_json::Value {
+    let scrolls: Vec<_> = capture["list_scrolls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["list_id"] == list_id)
+        .collect();
+    assert_eq!(scrolls.len(), 1, "{capture:#?}");
+    let entity = scrolls[0]["entity"].clone();
+    assert_eq!(entity["kind"], "VirtualScroll", "{capture:#?}");
+    entity
+}
+
+/// The published entity whose reference is `reference`.
+fn retained<'a>(
+    capture: &'a serde_json::Value,
+    reference: &serde_json::Value,
+) -> &'a serde_json::Value {
+    capture["retained_entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["ref"] == *reference)
+        .unwrap_or_else(|| panic!("no entity {reference}: {capture:#?}"))
 }
 
 #[test]
