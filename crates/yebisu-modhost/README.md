@@ -77,12 +77,23 @@ assertion depends on which changes share a frame: the runner merges every change
 made before its next frame into one publication, so wall-clock spacing between
 changes cannot decide how many publications a loaded host produces.
 
-Each publication writes `.frames` (bounded wire frames carrying zstd-compressed
-wire JSON, renamed into place after its sidecars, so a reader that sees it sees
-the whole publication), `.identity.json` (offline expected receiving context), `.publish.json`
-and `.tree` diagnostics, plus SVG assets by digest. Verify a capture with
-`yebisu-modhost inspect /scratch/capture/reviewer-0001.frames`; this independently
-reassembles, decompresses and validates the envelope and asset bytes. The local
+Each publication writes `.frames` (zstd-compressed wire JSON as numbered
+`[index u32 LE][bytes]` data chunks on channel 1, the wire's raw chunk shape,
+renamed into place after its sidecars, so a reader that sees it sees the whole
+publication), `.begin.json` (the `PublishBegin` header: total bytes, chunk
+count, SHA-256 and channel), `.identity.json` (offline expected receiving
+context), `.publish.json` and `.tree` diagnostics, plus SVG assets by digest.
+Verify a capture with `yebisu-modhost inspect /scratch/capture/reviewer-0001.frames`;
+this independently reassembles the chunks through the wire's `PublishAssembler`
+(count, total and digest), decompresses and validates the envelope and asset
+bytes.
+
+Every VirtualList node carries a VirtualScroll entity (design A2, audit X6). A
+list given `track_scroll(handle)` is bound to that handle's entity. A list
+without one keeps its position under its own name in the shell, so the runner
+publishes that position as a wire-only VirtualScroll entity whose id is derived
+from the list name (at or above 2^63, beside the root View's `u64::MAX`; script
+handles stay below 2^53). The local
 identity sidecar is not authenticated and is not an SSH session or client lease.
 The measurement script runs this receiving check on every emitted publication.
 

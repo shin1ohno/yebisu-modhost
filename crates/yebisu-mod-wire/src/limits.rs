@@ -76,3 +76,19 @@ pub const JSON_DEPTH: usize = 64;
 pub const OTP_DIGITS: usize = 32;
 pub const CALENDAR_MONTHS: usize = 12;
 pub const COORDINATE_ABS: f64 = 1_000_000.0;
+
+// Runtime values the design fixes outside the A8 table. They are not negotiated;
+// the runner and renderer read them from here so a G1-G5 revision changes one place.
+/// A13 `notify`: at most one new toast per second.
+pub const TOASTS_PER_SECOND: usize = 1;
+/// A13 `notify`: at most three toasts shown at the same time.
+pub const TOASTS_VISIBLE: usize = 3;
+/// A14: the in-memory contact origin reaches the grant file at most this late.
+pub const CONTACT_WRITE_MS: usize = 60_000;
+/// A14: `wall_high_water` refresh period while no valid contact advances it.
+pub const WALL_HIGH_WATER_MS: usize = 60_000;
+/// A14: re-check period while waiting for the OS to report clock sync.
+pub const CLOCK_SYNC_RECHECK_MS: usize = 60_000;
+/// A14 (b): after an OS reboot, a wall clock this far behind `wall_high_water`
+/// is not trusted and the grant is not restored.
+pub const WALL_ROLLBACK_SECS: usize = 300;

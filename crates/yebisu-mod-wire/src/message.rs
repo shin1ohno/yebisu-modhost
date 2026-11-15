@@ -12,7 +12,9 @@ pub struct Session {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Scope {
     Copy { id: String, incarnation: Id128 },
-    Session,
+    // Empty struct variants: serde ignores deny_unknown_fields on unit variants
+    // of internally tagged enums. The JSON form is unchanged.
+    Session {},
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -475,6 +477,20 @@ pub struct StopRequested {
     pub r#mod: ModIdentity,
     pub at: Counter,
 }
+/// One `stops.jsonl` line: a stop record and the canonical SHA-256 of the
+/// line with `record_digest` omitted (appendix A15).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StopLogLine {
+    pub record: StopRecord,
+    pub record_digest: Digest,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", deny_unknown_fields)]
+pub enum StopRecord {
+    StopRequested(StopRequested),
+    StopAck(StopAck),
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModLocation {
@@ -507,7 +523,8 @@ pub enum GrantState {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BgGrant {
-    pub format: u32,
+    /// Serializes as `1`; any other value fails to decode.
+    pub format: GrantFormat,
     pub grant_id: Id128,
     pub grant_rev: Counter,
     pub host_key: String,
@@ -598,14 +615,14 @@ pub enum ExecAuthority {
         grant_rev: Counter,
         deadline: Counter,
     },
-    None,
+    None {},
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reconcile {
-    Pending,
+    Pending {},
     Matched { grant_id: Id128, grant_rev: Counter },
-    Mismatched,
+    Mismatched {},
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -683,7 +700,7 @@ pub struct GatewayReply {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GatewayResult {
-    Ok,
+    Ok {},
     Failed { reason: GatewayFailure },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -709,7 +726,6 @@ pub enum MessageKind {
     FocusAck,
     Publish,
     PublishBegin,
-    PublishChunk,
     PublishCommit,
     RowsRequest,
     RowsReply,
@@ -795,9 +811,6 @@ impl Payload for Publish {
 }
 impl Payload for PublishBegin {
     const KIND: MessageKind = MessageKind::PublishBegin;
-}
-impl Payload for PublishChunk {
-    const KIND: MessageKind = MessageKind::PublishChunk;
 }
 impl Payload for PublishCommit {
     const KIND: MessageKind = MessageKind::PublishCommit;

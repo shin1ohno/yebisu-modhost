@@ -15,6 +15,9 @@ struct Identity {
 }
 use yebisu_mod_wire as wire;
 
+/// The data channel of the offline capture's one transfer (never 0, the control channel).
+const CAPTURE_CHANNEL: u32 = 1;
+
 pub fn tables() -> wire::ValidationTables {
     // The wire table is pinned to the copied shell, not inferred from a received frame.
     wire::ValidationTables {
@@ -129,14 +132,29 @@ pub fn write(
         serde_json::to_vec_pretty(&envelope.body)?,
     )?;
     std::fs::write(prefix.with_extension("zst"), &compressed)?;
+    // The same shape as a live transfer: a PublishBegin header naming the data
+    // channel, then numbered `[index u32 LE][bytes]` chunks on that channel.
+    let chunks: Vec<_> = compressed.chunks(wire::DATA_CHUNK_BYTES).collect();
+    let begin = wire::PublishBegin {
+        total_bytes: compressed.len(),
+        chunk_count: chunks.len(),
+        digest: wire::bytes_digest(&compressed),
+        channel: CAPTURE_CHANNEL,
+    };
+    // Reject what a receiver would reject before writing anything it reads.
+    wire::PublishAssembler::new(begin.clone()).context("publish header")?;
+    std::fs::write(
+        prefix.with_extension("begin.json"),
+        serde_json::to_vec(&begin)?,
+    )?;
     let mut frames = Vec::new();
-    for chunk in compressed.chunks(wire::limits::CHUNK_BYTES) {
+    for (index, bytes) in chunks.into_iter().enumerate() {
         frames.extend(
-            wire::Frame {
-                channel: 1,
-                kind: wire::FrameKind::Data,
-                payload: chunk.to_vec(),
+            wire::DataChunk {
+                index: u32::try_from(index)?,
+                bytes: bytes.to_vec(),
             }
+            .to_frame(CAPTURE_CHANNEL)?
             .encode()?,
         );
     }
@@ -150,25 +168,32 @@ pub fn write(
 }
 
 pub fn inspect(path: &Path) -> Result<Value> {
-    let bytes = std::fs::read(path)?;
+    let begin: wire::PublishBegin =
+        serde_json::from_slice(&std::fs::read(path.with_extension("begin.json"))?)
+            .context("publish header")?;
     anyhow::ensure!(
-        bytes.len() <= wire::limits::PUBLISH_BYTES + 4096,
+        begin.channel == CAPTURE_CHANNEL,
+        "unexpected capture channel"
+    );
+    // The assembler checks the total against the Publish ceiling before any frame.
+    let mut assembler = wire::PublishAssembler::new(begin.clone()).context("publish header")?;
+    let bytes = std::fs::read(path)?;
+    let frame_bytes = wire::FRAME_HEADER_BYTES + wire::DATA_CHUNK_HEADER_BYTES;
+    anyhow::ensure!(
+        bytes.len() <= begin.total_bytes + begin.chunk_count * frame_bytes,
         "capture file too large"
     );
     let mut reader = Cursor::new(bytes);
-    let mut compressed = Vec::new();
     while reader.position() < (reader.get_ref().len() as u64) {
         let frame = wire::Frame::read_from(&mut reader)?;
-        anyhow::ensure!(
-            frame.channel == 1 && frame.kind == wire::FrameKind::Data,
-            "invalid offline capture frame"
-        );
-        compressed.extend(frame.payload);
-        anyhow::ensure!(
-            compressed.len() <= wire::limits::PUBLISH_BYTES,
-            "compressed publication too large"
-        );
+        assembler.push_frame(&frame).context("publish chunk")?;
     }
+    // Count, total and SHA-256 must all match before any byte is used.
+    let compressed = assembler
+        .finish(wire::PublishCommit {
+            digest: begin.digest,
+        })
+        .context("publish assembly")?;
     let mut json_bytes = Vec::new();
     zstd::stream::read::Decoder::new(compressed.as_slice())?
         .take(wire::limits::PUBLISH_DECOMPRESSED_BYTES as u64 + 1)
@@ -206,6 +231,6 @@ pub fn inspect(path: &Path) -> Result<Value> {
         );
     }
     Ok(
-        json!({"file":path,"scope":received.scope,"generation":received.body.pub_rev,"nodes":received.body.views_full.iter().map(|v|v.nodes.len()).sum::<usize>(),"texts":received.body.views_full.iter().flat_map(|v|v.nodes.iter().filter_map(|n|n.text.as_deref())).collect::<Vec<_>>(),"entities":received.body.entities_full.len(),"retained_entities":received.body.entities_full,"state_rev":received.body.wm.state_rev,"list_manifests":received.body.list_manifests,"assets":received.body.asset_manifests.len(),"compressed_bytes":compressed.len(),"json_bytes":json_bytes.len()}),
+        json!({"file":path,"scope":received.scope,"generation":received.body.pub_rev,"nodes":received.body.views_full.iter().map(|v|v.nodes.len()).sum::<usize>(),"texts":received.body.views_full.iter().flat_map(|v|v.nodes.iter().filter_map(|n|n.text.as_deref())).collect::<Vec<_>>(),"entities":received.body.entities_full.len(),"retained_entities":received.body.entities_full,"state_rev":received.body.wm.state_rev,"list_manifests":received.body.list_manifests,"list_scrolls":received.body.views_full.iter().flat_map(|v|v.nodes.iter().filter(|n|n.list_id.is_some()).map(|n|json!({"list_id":n.list_id,"entity":n.entity}))).collect::<Vec<_>>(),"assets":received.body.asset_manifests.len(),"compressed_bytes":compressed.len(),"json_bytes":json_bytes.len()}),
     )
 }

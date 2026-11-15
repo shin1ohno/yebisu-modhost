@@ -650,6 +650,7 @@ fn validate_node_payload(
             | Component::SliderThumb => Some(EntityKind::Slider),
             Component::Calendar | Component::DatePicker => Some(EntityKind::Calendar),
             Component::ScrollArea => Some(EntityKind::Scroll),
+            Component::VirtualList | Component::List => Some(EntityKind::VirtualScroll),
             _ => None,
         };
         if expected.is_some_and(|k| k != e.kind) {
@@ -668,6 +669,8 @@ fn validate_node_payload(
             | Component::Calendar
             | Component::DatePicker
             | Component::ScrollArea
+            | Component::VirtualList
+            | Component::List
     ) {
         return Err(Error::Invalid("missing component entity"));
     }
@@ -692,10 +695,18 @@ fn validate_node_payload(
     {
         return Err(Error::Invalid("missing asset"));
     }
-    if let Some(id) = &node.list_id
-        && !lists.contains_key(&(generation, id))
-    {
-        return Err(Error::Invalid("list reference"));
+    if let Some(id) = &node.list_id {
+        let manifest = lists
+            .get(&(generation, id))
+            .ok_or(Error::Invalid("list reference"))?;
+        let kind_matches = match node.component {
+            Component::VirtualList => manifest.kind == ListKind::Virtual,
+            Component::List => matches!(manifest.kind, ListKind::Uniform | ListKind::Measured),
+            _ => true,
+        };
+        if !kind_matches {
+            return Err(Error::Invalid("list component kind"));
+        }
     }
     if matches!(node.component, Component::VirtualList | Component::List) && node.list_id.is_none()
     {
@@ -1090,24 +1101,38 @@ impl AssetReply {
         {
             return Err(Error::Stale("asset request"));
         }
-        if self.bytes.len() != manifest.encoded_bytes
-            || bytes_digest(&self.bytes) != manifest.digest
-        {
-            return Err(Error::DigestMismatch);
+        if self.total_bytes != manifest.encoded_bytes {
+            return Err(Error::Invalid("asset reply bytes"));
+        }
+        if self.channel == 0 {
+            return Err(Error::Invalid("data chunk on control channel"));
         }
         Ok(())
     }
 }
-/// URL confirmation uses this normalized host; no URL is fetched here.
-pub fn validate_url(value: &str) -> Result<String> {
+fn parse_https_url(value: &str) -> Result<url::Url> {
     let url = url::Url::parse(value).map_err(|_| Error::Invalid("URL"))?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return Err(Error::Invalid("URL scheme/credentials"));
     }
-    url.host_str()
-        .map(str::to_owned)
-        .filter(|h| !h.is_empty())
-        .ok_or(Error::Invalid("URL host"))
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(Error::Invalid("URL host"));
+    }
+    Ok(url)
+}
+/// Sender side: the canonical (WHATWG-serialized) HTTPS URL to put on the wire.
+pub fn normalize_url(value: &str) -> Result<String> {
+    Ok(parse_https_url(value)?.into())
+}
+/// Receiver side: accepts only a URL already in canonical form, so the host shown
+/// for confirmation is exactly the one the opened string resolves to; returns that
+/// host. No URL is fetched here.
+pub fn validate_url(value: &str) -> Result<String> {
+    let url = parse_https_url(value)?;
+    if url.as_str() != value {
+        return Err(Error::Invalid("URL not canonical"));
+    }
+    Ok(url.host_str().unwrap_or_default().to_owned())
 }
 impl DeviceRequest {
     pub fn validate(&self) -> Result<()> {
@@ -1480,5 +1505,56 @@ impl DeviceRequest {
             return Err(Error::Invalid("device permission hand-off"));
         }
         Ok(())
+    }
+}
+/// Stored records (appendix A14/A15) carry `record_digest`: the canonical digest
+/// of the record with that field omitted. A record that fails these checks is
+/// corrupt; the runner quarantines it and does not start the mod.
+impl BgGrant {
+    /// Set `record_digest` from the other fields. Call after every change.
+    pub fn seal(&mut self) -> Result<()> {
+        self.record_digest = canonical_digest(self, "record_digest")?;
+        Ok(())
+    }
+    pub fn validate(&self) -> Result<()> {
+        if canonical_digest(self, "record_digest")? != self.record_digest {
+            return Err(Error::DigestMismatch);
+        }
+        Ok(())
+    }
+    /// Strict read of one grant file: bounded JSON without duplicate keys,
+    /// unknown fields or an unknown `format`, then the record digest.
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > limits::CONTROL_BYTES {
+            return Err(Error::Limit("grant record bytes"));
+        }
+        let grant: Self = serde_json::from_value(strict_json(bytes)?)?;
+        grant.validate()?;
+        Ok(grant)
+    }
+}
+impl StopLogLine {
+    pub fn new(record: StopRecord) -> Result<Self> {
+        let mut line = Self {
+            record,
+            record_digest: bytes_digest(b""),
+        };
+        line.record_digest = canonical_digest(&line, "record_digest")?;
+        Ok(line)
+    }
+    pub fn validate(&self) -> Result<()> {
+        if canonical_digest(self, "record_digest")? != self.record_digest {
+            return Err(Error::DigestMismatch);
+        }
+        Ok(())
+    }
+    /// Strict read of one `stops.jsonl` line (without its newline).
+    pub fn decode(line: &[u8]) -> Result<Self> {
+        if line.len() > limits::STOP_LOG_BYTES {
+            return Err(Error::Limit("stop log line bytes"));
+        }
+        let value: Self = serde_json::from_value(strict_json(line)?)?;
+        value.validate()?;
+        Ok(value)
     }
 }

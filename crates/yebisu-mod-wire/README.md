@@ -13,7 +13,11 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
    `decode_hello_ack_bootstrap` only to display the peer's version when incompatible.
 2. Use `FrameHeader::decode` before reserving memory. The nine-byte header is
    `[channel u32 LE][kind u8][len u32 LE]`. DATA=0, CREDIT=1, CLOSE=2. Channel zero
-   carries control messages (64 KiB); other channels carry fragments (16 KiB).
+   carries JSON control messages (64 KiB); other channels carry raw data chunks
+   (16 KiB frames). A data chunk payload is `[index u32 LE][bytes]`, so one chunk
+   holds at most `DATA_CHUNK_BYTES` (16,380) bytes of content; use
+   `DataChunk::to_frame` / `DataChunk::from_frame`. `PublishBegin.channel` and
+   `AssetReply.channel` name the data channel (never 0) of each transfer.
    This is a separate protocol; terminal RESIZE/FOCUS/FACTS kinds are rejected.
 3. `encode`/`decode::<T>` handle a typed `Envelope<T>`, validate its `type`, protocol,
    schema, JSON grammar, counters, duplicate keys and message limits. Body-specific
@@ -28,14 +32,18 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
    changes, including across epoch changes. Generations are unique across views. Commit the tracker and displayed publication only after atomic
    adoption. Receipt floors advance from terminal receipts, never from OpRejected.
 5. Use `EntityUpdate::validate_against`, `EntityRelease::validate_against`,
-   `RowsReply::validate_against` and `AssetReply::validate_against` with the actual
-   prior entity, outstanding request, or manifest. For rows, first construct
+   `RowsReply::validate_against` and `AssetAssembler::new` (which runs
+   `AssetReply::validate_against`) with the actual prior entity, outstanding
+   request, or manifest. For rows, first construct
    `RowValidation::new(&adopted_publish, &tables)` and pass it as the third argument.
    Its immutable borrow resolves row entities, assets, lists and op arguments
    against the currently adopted copy. List identity within that copy is
    `(view_generation, list_id)`: `handler_generation` must match the view
    containing the List/VirtualList node. The same ID can appear in different
    view generations, but duplicate manifests for the same pair are rejected.
+   A VirtualList/List node references a VirtualScroll entity (A2) and a manifest
+   of the matching kind (A7): VirtualList ↔ `virtual` (per-row sizes), List ↔
+   `uniform` or `measured` (an estimate).
    Rows require the matching list node in the requested view; an unused manifest
    alone does not authorize delivery. Rows cannot contain List/VirtualList nodes
    or any list reference: a list drawn inside a row is not owned by an adopted
@@ -89,14 +97,26 @@ The design leaves these representations to E-wire:
   retain their original Unicode normalization and line endings. `Edit` and
   `Action` validate their body digest before encoding/after decoding.
 - `PublishAssembler` reserves one whole publication, requires numbered,
-  nonempty bounded fragments and matching Begin/Commit/content digests, then
+  nonempty bounded chunks on the channel named by `PublishBegin`, a chunk count
+  that can carry `total_bytes`, and matching Begin/Commit/content digests, then
   returns only complete bytes. Its owner drops it on replacement, expiry or
   Pause. No compression format is enabled implicitly; `read_bounded` is the
   output ceiling for a separately negotiated decompressor.
-- `AssetReply` is a logical, assembled response; raw image bytes should travel
-  over credited data fragments, not as a single channel-zero control message.
-  Verify the image header and decoded size before decoding the content. An
-  asset manifest does not prove that its bytes form a safe image or SVG.
+- `AssetReply` is a control-sized header (`channel`, `total_bytes`,
+  `chunk_count`); the encoded asset follows as raw chunks on that channel and
+  `AssetAssembler` releases it only when its size and SHA-256 match the
+  manifest. Verify the image header and decoded size before decoding the
+  content. An asset manifest does not prove that its bytes form a safe image or
+  SVG.
+- Unit-like variants (`scope: {kind:"session"}`, gateway `ok`,
+  `ExecAuthority::None`, `Reconcile` `pending`/`mismatched`) are empty struct
+  variants so unknown fields beside the tag are rejected; the JSON is unchanged.
+- `BgGrant.format` decodes only `1`. `BgGrant::seal` sets and
+  `BgGrant::validate` / `BgGrant::decode` check `record_digest` (the canonical
+  digest with that field omitted). `StopLogLine { record, record_digest }` is the
+  `stops.jsonl` line, with `StopLogLine::new` / `StopLogLine::decode`.
+- `HelloAck` bootstrap relies on the envelope's `type` and `body` keys in
+  addition to the `nonce`, `protocol` and `serve` fields the design keeps stable.
 
 ## Runtime boundaries
 
@@ -107,7 +127,12 @@ resource reservation and release, CPU/time budgets, image decoding, SVG/document
 sanitization, and current Policy checks on admission and execution. The types
 `ExecAuthority`, `Reconcile`, `BgGrant`, and device requests are data contracts;
 they are not an authorization engine or a persistent grant store. URL validation
-allows HTTPS only and returns a normalized host for the separate confirmation UI.
+allows HTTPS only. Senders put `normalize_url(value)` on the wire; receivers call
+`validate_url`, which accepts only that canonical string (so the confirmed host
+is the host of exactly the string that is opened) and returns the host for the
+separate confirmation UI. Runtime values that the design fixes outside the A8
+table (toast rate and count, grant write and clock re-check periods, the
+wall-clock rollback threshold) are constants in `limits`, not negotiated.
 
 F1 from the final design review belongs to the setup update/recovery workflow;
 this crate includes update as a `StopSource` and carries the exact op ID and
@@ -141,6 +166,7 @@ the device's overlay registry. It returns `GatewayReply` with `ok` or
 `Overlay.kind` is `overlay` or `toast`. Toasts require
 `ToastContent { message, mod_name, host_name }`; ordinary overlays have
 `toast: null`. Notify accepts only a toast. The renderer enforces one toast
-per second, at most three simultaneous toasts, parent/child publication
+per second and at most three simultaneous toasts (`limits::TOASTS_PER_SECOND`,
+`limits::TOASTS_VISIBLE`), parent/child publication
 readiness and placement below yebisu confirmation sheets. These are runtime
 obligations, not guarantees provided by serialization.

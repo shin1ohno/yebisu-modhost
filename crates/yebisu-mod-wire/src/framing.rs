@@ -144,50 +144,201 @@ impl Credit {
         Ok(())
     }
 }
-/// One assembly per copy. The caller drops this at the five-second deadline,
-/// Pause, reconnect, or replacement. This type never exposes partial bytes.
+/// `[index u32 LE]` prefix of every data chunk frame payload.
+pub const DATA_CHUNK_HEADER_BYTES: usize = 4;
+/// Largest chunk body: the chunk and its index fit one data-channel frame.
+pub const DATA_CHUNK_BYTES: usize = limits::CHUNK_BYTES - DATA_CHUNK_HEADER_BYTES;
+impl DataChunk {
+    /// One DATA frame on `channel` (never 0, which carries JSON control messages).
+    pub fn to_frame(&self, channel: u32) -> Result<Frame> {
+        data_channel(channel)?;
+        chunk_body(&self.bytes)?;
+        let mut payload = Vec::with_capacity(DATA_CHUNK_HEADER_BYTES + self.bytes.len());
+        payload.extend_from_slice(&self.index.to_le_bytes());
+        payload.extend_from_slice(&self.bytes);
+        Ok(Frame {
+            channel,
+            kind: FrameKind::Data,
+            payload,
+        })
+    }
+    pub fn from_frame(frame: &Frame) -> Result<Self> {
+        data_channel(frame.channel)?;
+        if frame.kind != FrameKind::Data {
+            return Err(Error::Invalid("chunk frame kind"));
+        }
+        let (index, bytes) = frame
+            .payload
+            .split_at_checked(DATA_CHUNK_HEADER_BYTES)
+            .ok_or(Error::Invalid("short chunk frame"))?;
+        chunk_body(bytes)?;
+        Ok(Self {
+            index: u32::from_le_bytes(index.try_into().unwrap()),
+            bytes: bytes.to_vec(),
+        })
+    }
+}
+fn data_channel(channel: u32) -> Result<()> {
+    if channel == 0 {
+        return Err(Error::Invalid("data chunk on control channel"));
+    }
+    Ok(())
+}
+fn chunk_body(bytes: &[u8]) -> Result<()> {
+    if bytes.is_empty() || bytes.len() > DATA_CHUNK_BYTES {
+        return Err(Error::Limit("chunk bytes"));
+    }
+    Ok(())
+}
+/// Reassembles numbered raw chunks into one reserved buffer and releases the bytes
+/// only when the count, the total and the SHA-256 all match.
 #[derive(Debug)]
-pub struct PublishAssembler {
-    begin: PublishBegin,
+struct ChunkAssembler {
+    channel: u32,
+    total_bytes: usize,
+    chunk_count: usize,
+    digest: Digest,
     next: usize,
     bytes: Vec<u8>,
 }
-impl PublishAssembler {
-    pub fn new(begin: PublishBegin) -> Result<Self> {
-        if begin.total_bytes == 0 || begin.total_bytes > limits::PUBLISH_BYTES {
-            return Err(Error::Limit("publish assembly bytes"));
+impl ChunkAssembler {
+    fn new(
+        channel: u32,
+        total_bytes: usize,
+        chunk_count: usize,
+        digest: Digest,
+        ceiling: usize,
+        what: &'static str,
+    ) -> Result<Self> {
+        data_channel(channel)?;
+        if total_bytes == 0 || total_bytes > ceiling {
+            return Err(Error::Limit(what));
         }
-        if begin.chunk_count == 0 || begin.chunk_count > begin.total_bytes {
-            return Err(Error::Invalid("publish chunk count"));
+        if chunk_count == 0
+            || chunk_count > total_bytes
+            || chunk_count < total_bytes.div_ceil(DATA_CHUNK_BYTES)
+            || chunk_count > u32::MAX as usize
+        {
+            return Err(Error::Invalid("chunk count"));
         }
         Ok(Self {
-            bytes: Vec::with_capacity(begin.total_bytes),
-            begin,
+            channel,
+            total_bytes,
+            chunk_count,
+            digest,
             next: 0,
+            bytes: Vec::with_capacity(total_bytes),
         })
     }
-    pub fn push(&mut self, index: usize, bytes: &[u8]) -> Result<()> {
-        if index != self.next || self.next >= self.begin.chunk_count {
+    fn push(&mut self, index: usize, bytes: &[u8]) -> Result<()> {
+        if index != self.next || self.next >= self.chunk_count {
             return Err(Error::Invalid("chunk order"));
         }
-        if bytes.is_empty() || bytes.len() > limits::CHUNK_BYTES {
-            return Err(Error::Limit("chunk bytes"));
-        }
-        if self.bytes.len().saturating_add(bytes.len()) > self.begin.total_bytes {
+        chunk_body(bytes)?;
+        if self.bytes.len().saturating_add(bytes.len()) > self.total_bytes {
             return Err(Error::Limit("assembly overflow"));
         }
         self.bytes.extend_from_slice(bytes);
         self.next += 1;
         Ok(())
     }
-    pub fn finish(self, commit: PublishCommit) -> Result<Vec<u8>> {
-        if self.next != self.begin.chunk_count || self.bytes.len() != self.begin.total_bytes {
-            return Err(Error::Invalid("incomplete publish"));
+    fn push_frame(&mut self, frame: &Frame) -> Result<()> {
+        if frame.channel != self.channel {
+            return Err(Error::Invalid("chunk channel"));
         }
-        if commit.digest != self.begin.digest || bytes_digest(&self.bytes) != commit.digest {
+        let chunk = DataChunk::from_frame(frame)?;
+        self.push(chunk.index as usize, &chunk.bytes)
+    }
+    fn finish(self, what: &'static str) -> Result<Vec<u8>> {
+        if self.next != self.chunk_count || self.bytes.len() != self.total_bytes {
+            return Err(Error::Invalid(what));
+        }
+        if bytes_digest(&self.bytes) != self.digest {
             return Err(Error::DigestMismatch);
         }
         Ok(self.bytes)
+    }
+}
+/// One assembly per copy. The caller drops this at the five-second deadline,
+/// Pause, reconnect, or replacement. This type never exposes partial bytes.
+#[derive(Debug)]
+pub struct PublishAssembler {
+    begin: PublishBegin,
+    inner: ChunkAssembler,
+}
+impl PublishAssembler {
+    pub fn new(begin: PublishBegin) -> Result<Self> {
+        let inner = ChunkAssembler::new(
+            begin.channel,
+            begin.total_bytes,
+            begin.chunk_count,
+            begin.digest.clone(),
+            limits::PUBLISH_BYTES,
+            "publish assembly bytes",
+        )
+        .map_err(|e| match e {
+            Error::Invalid("chunk count") => Error::Invalid("publish chunk count"),
+            e => e,
+        })?;
+        Ok(Self { begin, inner })
+    }
+    pub fn push(&mut self, index: usize, bytes: &[u8]) -> Result<()> {
+        self.inner.push(index, bytes)
+    }
+    /// Accept one DATA frame from the channel named by `PublishBegin.channel`.
+    pub fn push_frame(&mut self, frame: &Frame) -> Result<()> {
+        self.inner.push_frame(frame)
+    }
+    pub fn finish(self, commit: PublishCommit) -> Result<Vec<u8>> {
+        if self.inner.next != self.inner.chunk_count
+            || self.inner.bytes.len() != self.inner.total_bytes
+        {
+            return Err(Error::Invalid("incomplete publish"));
+        }
+        if commit.digest != self.begin.digest {
+            return Err(Error::DigestMismatch);
+        }
+        self.inner.finish("incomplete publish")
+    }
+}
+/// Reassembles an `AssetReply` body from its data channel. The reply header is
+/// checked against the request and manifest first; the bytes are released only
+/// when they match the manifest's size and digest.
+#[derive(Debug)]
+pub struct AssetAssembler {
+    inner: ChunkAssembler,
+}
+impl AssetAssembler {
+    pub fn new(
+        reply: &AssetReply,
+        request: &AssetRequest,
+        manifest: &AssetManifest,
+    ) -> Result<Self> {
+        reply.validate_against(request, manifest)?;
+        let ceiling = if manifest.kind == AssetKind::Svg {
+            limits::SVG_BYTES
+        } else {
+            limits::IMAGE_BYTES
+        };
+        Ok(Self {
+            inner: ChunkAssembler::new(
+                reply.channel,
+                reply.total_bytes,
+                reply.chunk_count,
+                manifest.digest.clone(),
+                ceiling,
+                "encoded asset bytes",
+            )?,
+        })
+    }
+    pub fn push(&mut self, index: usize, bytes: &[u8]) -> Result<()> {
+        self.inner.push(index, bytes)
+    }
+    pub fn push_frame(&mut self, frame: &Frame) -> Result<()> {
+        self.inner.push_frame(frame)
+    }
+    pub fn finish(self) -> Result<Vec<u8>> {
+        self.inner.finish("incomplete asset")
     }
 }
 /// Apply to a decompression reader *before* parsing. Reads at most limit+1 bytes.
