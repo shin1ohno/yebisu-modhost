@@ -291,6 +291,29 @@ fn tracked_virtual_list_is_bound_to_the_script_scroll_handle() {
 }
 
 #[test]
+fn virtual_list_tracking_twice_is_bound_to_the_last_handle() {
+    // The shell's `track_scroll` overwrites the previous one, so the list
+    // follows the second handle; the receiver must see that entity.
+    let captures = captures_until(include_str!("fixtures/tracked_twice/main.js"), |c| {
+        !c.is_empty()
+    });
+    let handle = |prefix: &str| -> String {
+        let texts = captures[0]["texts"].as_array().unwrap();
+        let text = texts
+            .iter()
+            .find_map(|t| t.as_str()?.strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("no {prefix}: {texts:?}"));
+        text.to_string()
+    };
+    let (first, second) = (handle("first="), handle("second="));
+    assert_ne!(first, second);
+    let scroll = list_scroll(&captures[0], "twice-list");
+    assert_eq!(scroll["id"], second.as_str());
+    let entity = retained(&captures[0], &scroll);
+    assert_eq!(entity["state"]["kind"], "VirtualScroll");
+}
+
+#[test]
 fn retained_change_beside_an_untracked_list_publishes_without_parent_notify() {
     use serde_json::json;
     // The comparison with the previous publication must skip the list's

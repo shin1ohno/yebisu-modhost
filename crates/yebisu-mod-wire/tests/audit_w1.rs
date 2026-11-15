@@ -595,3 +595,205 @@ fn x20_stop_log_lines_carry_a_verified_record_digest() {
         Err(Error::Json(_))
     ));
 }
+
+// Review S2 (A8/A9): a transfer header that announces no bytes, more bytes
+// than its ceiling, no chunks, or more chunks than bytes is rejected before
+// anything is reserved, for Publish and asset alike.
+#[test]
+fn s2_transfer_headers_reject_empty_oversized_and_overcounted() {
+    let begin = PublishBegin {
+        total_bytes: 1,
+        chunk_count: 1,
+        digest: bytes_digest(&[1]),
+        channel: 2,
+    };
+    PublishAssembler::new(begin.clone()).unwrap();
+    let publish = |total_bytes, chunk_count| {
+        PublishAssembler::new(PublishBegin {
+            total_bytes,
+            chunk_count,
+            ..begin.clone()
+        })
+        .err()
+    };
+    assert_eq!(publish(0, 0), Some(Error::Limit("publish assembly bytes")));
+    assert_eq!(publish(0, 1), Some(Error::Limit("publish assembly bytes")));
+    assert_eq!(
+        publish(limits::PUBLISH_BYTES + 1, limits::PUBLISH_BYTES),
+        Some(Error::Limit("publish assembly bytes"))
+    );
+    assert_eq!(publish(1, 0), Some(Error::Invalid("publish chunk count")));
+    assert_eq!(publish(1, 2), Some(Error::Invalid("publish chunk count")));
+    assert_eq!(publish(5, 6), Some(Error::Invalid("publish chunk count")));
+    // The largest count the header allows is one byte per chunk.
+    PublishAssembler::new(PublishBegin {
+        total_bytes: 5,
+        chunk_count: 5,
+        ..begin.clone()
+    })
+    .unwrap();
+
+    let bytes = b"asset".to_vec();
+    let manifest = png_manifest(&bytes);
+    let request = AssetRequest {
+        request_id: "req".into(),
+        asset: AssetRef {
+            id: "a".into(),
+            digest: manifest.digest.clone(),
+        },
+    };
+    let reply = AssetReply {
+        request_id: "req".into(),
+        asset: request.asset.clone(),
+        channel: 3,
+        total_bytes: bytes.len(),
+        chunk_count: 1,
+    };
+    AssetAssembler::new(&reply, &request, &manifest).unwrap();
+    for chunk_count in [0, bytes.len() + 1] {
+        let reply = AssetReply {
+            chunk_count,
+            ..reply.clone()
+        };
+        assert_eq!(
+            AssetAssembler::new(&reply, &request, &manifest).err(),
+            Some(Error::Invalid("chunk count")),
+            "{chunk_count}"
+        );
+    }
+}
+
+// Review S2 (A9): a chunk that would carry the assembly past the header's
+// total is rejected when it arrives, not only when the transfer finishes.
+#[test]
+fn s2_assembly_rejects_bytes_beyond_the_header_total() {
+    let bytes = [1u8, 2, 3, 4, 5];
+    let begin = PublishBegin {
+        total_bytes: bytes.len(),
+        chunk_count: 2,
+        digest: bytes_digest(&bytes),
+        channel: 2,
+    };
+    let chunk = |index: u32, bytes: &[u8]| {
+        DataChunk {
+            index,
+            bytes: bytes.to_vec(),
+        }
+        .to_frame(2)
+        .unwrap()
+    };
+    let mut a = PublishAssembler::new(begin.clone()).unwrap();
+    a.push_frame(&chunk(0, &bytes[..4])).unwrap();
+    assert_eq!(
+        a.push_frame(&chunk(1, &[5, 6, 7, 8])),
+        Err(Error::Limit("assembly overflow"))
+    );
+    // The same header completes with chunks that sum to its total.
+    let mut a = PublishAssembler::new(begin.clone()).unwrap();
+    a.push_frame(&chunk(0, &bytes[..4])).unwrap();
+    a.push_frame(&chunk(1, &bytes[4..])).unwrap();
+    let commit = PublishCommit {
+        digest: begin.digest.clone(),
+    };
+    assert_eq!(a.finish(commit).unwrap(), bytes);
+
+    let manifest = png_manifest(&bytes);
+    let request = AssetRequest {
+        request_id: "req".into(),
+        asset: AssetRef {
+            id: "a".into(),
+            digest: manifest.digest.clone(),
+        },
+    };
+    let reply = AssetReply {
+        request_id: "req".into(),
+        asset: request.asset.clone(),
+        channel: 2,
+        total_bytes: bytes.len(),
+        chunk_count: 2,
+    };
+    let mut a = AssetAssembler::new(&reply, &request, &manifest).unwrap();
+    a.push_frame(&chunk(0, &bytes[..4])).unwrap();
+    assert_eq!(
+        a.push_frame(&chunk(1, &[5, 6])),
+        Err(Error::Limit("assembly overflow"))
+    );
+}
+
+// Review S2 (A9): an AssetReply answers exactly one request for exactly one
+// manifest entry. Each of the four bindings is checked on its own: the
+// request id, the reference the request named, and the manifest's id and
+// digest.
+#[test]
+fn s2_asset_reply_must_answer_its_request_and_manifest() {
+    let bytes = b"asset".to_vec();
+    let manifest = png_manifest(&bytes);
+    let named = AssetRef {
+        id: "a".into(),
+        digest: manifest.digest.clone(),
+    };
+    let request = AssetRequest {
+        request_id: "req".into(),
+        asset: named.clone(),
+    };
+    let reply = AssetReply {
+        request_id: "req".into(),
+        asset: named.clone(),
+        channel: 1,
+        total_bytes: bytes.len(),
+        chunk_count: 1,
+    };
+    reply.validate_against(&request, &manifest).unwrap();
+    let stale = Some(Error::Stale("asset request"));
+    let check = |reply: &AssetReply, request: &AssetRequest| {
+        assert_eq!(reply.validate_against(request, &manifest).err(), stale);
+        assert_eq!(AssetAssembler::new(reply, request, &manifest).err(), stale);
+    };
+    // A reply to another request.
+    check(
+        &AssetReply {
+            request_id: "other".into(),
+            ..reply.clone()
+        },
+        &request,
+    );
+    // The reply names the manifest's asset, but the request named another.
+    let elsewhere = AssetRequest {
+        request_id: "req".into(),
+        asset: AssetRef {
+            id: "b".into(),
+            digest: bytes_digest(b"other"),
+        },
+    };
+    check(&reply, &elsewhere);
+    // Request and reply agree, but on an id the manifest does not carry.
+    let wrong_id = AssetRef {
+        id: "b".into(),
+        digest: manifest.digest.clone(),
+    };
+    check(
+        &AssetReply {
+            asset: wrong_id.clone(),
+            ..reply.clone()
+        },
+        &AssetRequest {
+            request_id: "req".into(),
+            asset: wrong_id,
+        },
+    );
+    // Request and reply agree, but on a digest the manifest does not carry.
+    let wrong_digest = AssetRef {
+        id: "a".into(),
+        digest: bytes_digest(b"other"),
+    };
+    check(
+        &AssetReply {
+            asset: wrong_digest.clone(),
+            ..reply.clone()
+        },
+        &AssetRequest {
+            request_id: "req".into(),
+            asset: wrong_digest,
+        },
+    );
+}

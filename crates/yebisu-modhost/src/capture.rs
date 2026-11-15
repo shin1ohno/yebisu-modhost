@@ -328,8 +328,10 @@ pub fn publish(
                 list_id = json!(list.id());
                 // A2: a VirtualList's position lives in a VirtualScroll entity.
                 // Bind the handle the script tracks; otherwise the list's own
-                // name-keyed position, published as a wire-only entity.
-                let tracked = source.ops().iter().find_map(|op| match op {
+                // name-keyed position, published as a wire-only entity. The
+                // shell assigns each `track_scroll` over the previous one, so
+                // the last call is the handle the list actually follows.
+                let tracked = source.ops().iter().rev().find_map(|op| match op {
                     SpecOp::Method(name, args) if *name == "track_scroll" => Some(args.first()),
                     _ => None,
                 });
