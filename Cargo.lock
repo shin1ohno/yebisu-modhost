@@ -9701,6 +9701,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac366ea532fa8ee6a992cec9dea525b1dc284e69702f36c2ab5fbebadc81ec86"
 
 [[package]]
+name = "yebisu-mod-renderer"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "yebisu-mod-wire",
+]
+
+[[package]]
 name = "yebisu-mod-wire"
 version = "0.1.0"
 dependencies = [

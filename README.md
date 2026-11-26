@@ -8,6 +8,9 @@ The workspace contains:
 - [`yebisu-mod-wire`](crates/yebisu-mod-wire): GPUI-independent snapshot, retained
   entity, input/event receipt, virtual-row, asset, control and framed-transport
   types with bounded decoding and validation.
+- [`yebisu-mod-renderer`](crates/yebisu-mod-renderer/README.md): GPUI-independent
+  receiving core of the renderer: handshake, atomic publication adoption, and
+  row/asset delivery under the negotiated limits at each resource scope.
 - [`yebisu-modhost`](crates/yebisu-modhost/README.md): Linux headless prototype
   that loads copied mod bundles, drives native frames on notifications, and
   writes wire snapshots with an independent receiving-side inspector.

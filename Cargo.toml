@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/yebisu-mod-wire", "crates/yebisu-modhost"]
+members = ["crates/yebisu-mod-wire", "crates/yebisu-mod-renderer", "crates/yebisu-modhost"]
 resolver = "2"
 exclude = ["vendor/gpui-kit/crates/base", "vendor/gpui-kit/crates/fps", "vendor/gpui-kit/crates/shell", "vendor/gpui-kit/crates/shell/rquickjs-compat", "vendor/gpui-kit", "vendor/gpui-pre", "vendor/gpui-pre-linux", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-apple", "vendor/gpui-pre-macos", "vendor/gpui-pre-windows", "vendor/taffy", "vendor/quickjs-jit-runtime", "vendor/zed-xim", "vendor/xim-ctext"]
 
