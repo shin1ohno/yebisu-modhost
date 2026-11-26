@@ -28,5 +28,25 @@ code and never draws. It applies the receiving rules that the
   a copy that no longer has the list or asset ends those requests and returns
   their reservations.
 
+- `Gateway` answers every `GatewayRequest` with one `GatewayReply` and yields
+  a `GatewayEffect` only for an accepted request. In order: an envelope from
+  another session, copy incarnation or owner fence, or a body target that
+  does not match the authenticated copy, is `stale_target`; a paused or
+  unloaded copy is `cancelled`; a connection that is not the operating one
+  (including background execution) is `no_operating_connection`; a stale
+  Policy revision, a `run` command outside the allowlist or a disallowed
+  `set_agent_order` is `policy_denied`. Overlays and toasts belong to the
+  copy incarnation whose envelope opened them; naming another copy, reusing an
+  open ID or closing another copy's overlay is `not_owned`. Toasts are limited
+  to one per second (`rate_limited`) and three visible (`limit_exceeded`).
+  `open_overlay` carries only an ordinary overlay, so a toast always passes
+  these limits. A toast shows the mod and host names the device registered
+  for that copy incarnation (`register_copy`), never the payload's.
+  Authentication runs before the replay cache: only an authenticated request
+  is remembered, keyed by the authenticated session, copy scope, owner fence
+  and ID, so a resent request gets the remembered reply and does not run
+  again, a forged one can neither read nor fill the cache, and a stopped
+  copy's remembered replies are dropped.
+
 Protocol 1 enables no compression format implicitly; `Uncompressed` is the
 only `Inflate` provided here.
