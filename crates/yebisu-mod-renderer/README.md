@@ -41,12 +41,31 @@ code and never draws. It applies the receiving rules that the
   to one per second (`rate_limited`) and three visible (`limit_exceeded`).
   `open_overlay` carries only an ordinary overlay, so a toast always passes
   these limits. A toast shows the mod and host names the device registered
-  for that copy incarnation (`register_copy`), never the payload's.
+  for that copy incarnation (`register_copy`) from its own records (the
+  approved mod record, the SSH-verified host), never the payload's or
+  HelloAck's.
   Authentication runs before the replay cache: only an authenticated request
   is remembered, keyed by the authenticated session, copy scope, owner fence
   and ID, so a resent request gets the remembered reply and does not run
   again, a forged one can neither read nor fill the cache, and a stopped
   copy's remembered replies are dropped.
+
+- `DevicePermissions` is the device's A12 ledger. `issue` creates one opaque
+  permission per operation for an individual tap or key event (tokens come
+  from the caller's CSPRNG; a repeated operation or reused token is refused),
+  bound to the connection, copy incarnation, owner fence and Policy revision;
+  `sent` records the Action that carried them. A `DeviceRequest` is
+  authenticated before the replay cache, then must name a live permission
+  issued to the same connection and owner, carried by that event's Action for
+  that operation (`validate_permission`), within one second on the device's
+  monotonic clock (`limits::GRANT_MS`; after that `expired`, finally), under
+  the current Policy revision. Pause/Unload (`cancel_copy`), a connection or
+  epoch change (`cancel_connection`) and a Policy change cancel unspent
+  permissions. A permission is spent once: a second request is `denied`, and
+  a resent request with the same ID gets the remembered reply without a second
+  effect. `open_url` yields the canonical URL and the host for the
+  confirmation sheet; `clipboard_write` needs a device that allows remote
+  clipboard writes (`unsupported_remote_clipboard` otherwise).
 
 Protocol 1 enables no compression format implicitly; `Uncompressed` is the
 only `Inflate` provided here.
