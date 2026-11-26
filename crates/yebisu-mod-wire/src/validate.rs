@@ -1,7 +1,7 @@
 use crate::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn ceiling(value: usize, max: usize, name: &'static str) -> Result<()> {
+pub(crate) fn ceiling(value: usize, max: usize, name: &'static str) -> Result<()> {
     if value > max {
         Err(Error::Limit(name))
     } else {
@@ -1326,98 +1326,6 @@ impl Action {
         Ok(())
     }
 }
-/// Shared counters for resources whose ownership spans messages. Scope-specific
-/// ledgers must be shared across all copies/hosts at that scope, not per socket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Resource {
-    HostCopies,
-    AppCopies,
-    CallbackGenerations,
-    Callbacks,
-    Events,
-    ControlPending,
-    ControlPerSecond,
-    Receipts,
-    ReceiptBytes,
-    RowRequestsList,
-    RowRequestsCopy,
-    RowRequestsApp,
-    RowCacheBytes,
-    AssetCacheBytes,
-    AssetTransfersCopy,
-    AssetTransfersHost,
-    AssetTransfersApp,
-    AssetDecodedBytes,
-    AssetsDecodedBytes,
-    AssetsPixels,
-    AppBytes,
-    JsHeapBytes,
-    WorkerRssBytes,
-    WorkersRssBytes,
-    ChildrenCopy,
-    ChildrenHost,
-    BackgroundCopies,
-}
-impl Resource {
-    pub fn limit(self) -> usize {
-        match self {
-            Self::HostCopies => limits::COPIES_HOST,
-            Self::AppCopies => limits::COPIES_APP,
-            Self::CallbackGenerations => limits::CALLBACK_GENERATIONS,
-            Self::Callbacks => limits::CALLBACKS,
-            Self::Events => limits::EVENT_QUEUE,
-            Self::ControlPending => limits::CONTROL_PENDING_BYTES,
-            Self::ControlPerSecond => limits::CONTROL_PER_SECOND,
-            Self::Receipts => limits::RECEIPTS,
-            Self::ReceiptBytes => limits::RECEIPTS_BYTES,
-            Self::RowRequestsList => limits::ROW_REQUESTS_LIST,
-            Self::RowRequestsCopy => limits::ROW_REQUESTS_COPY,
-            Self::RowRequestsApp => limits::ROW_REQUESTS_APP,
-            Self::RowCacheBytes => limits::ROW_CACHE_BYTES,
-            Self::AssetCacheBytes => limits::ASSET_CACHE_BYTES,
-            Self::AssetTransfersCopy => limits::ASSET_TRANSFERS_COPY,
-            Self::AssetTransfersHost => limits::ASSET_TRANSFERS_HOST,
-            Self::AssetTransfersApp => limits::ASSET_TRANSFERS_APP,
-            Self::AssetDecodedBytes => limits::ASSET_DECODED_BYTES,
-            Self::AssetsDecodedBytes => limits::ASSETS_DECODED_BYTES,
-            Self::AssetsPixels => limits::ASSETS_PIXELS,
-            Self::AppBytes => limits::APP_BYTES,
-            Self::JsHeapBytes => limits::JS_HEAP_BYTES,
-            Self::WorkerRssBytes => limits::WORKER_RSS_BYTES,
-            Self::WorkersRssBytes => limits::WORKERS_RSS_BYTES,
-            Self::ChildrenCopy => limits::CHILDREN_COPY,
-            Self::ChildrenHost => limits::CHILDREN_HOST,
-            Self::BackgroundCopies => limits::BACKGROUND_COPIES,
-        }
-    }
-}
-#[derive(Debug, Default)]
-pub struct ResourceLedger {
-    used: BTreeMap<Resource, usize>,
-}
-impl ResourceLedger {
-    pub fn used(&self, r: Resource) -> usize {
-        self.used.get(&r).copied().unwrap_or(0)
-    }
-    pub fn reserve(&mut self, r: Resource, amount: usize) -> Result<()> {
-        let next = self
-            .used(r)
-            .checked_add(amount)
-            .ok_or(Error::Limit("resource overflow"))?;
-        ceiling(next, r.limit(), "resource budget")?;
-        self.used.insert(r, next);
-        Ok(())
-    }
-    pub fn release(&mut self, r: Resource, amount: usize) -> Result<()> {
-        let next = self
-            .used(r)
-            .checked_sub(amount)
-            .ok_or(Error::Invalid("resource release underflow"))?;
-        self.used.insert(r, next);
-        Ok(())
-    }
-}
-
 impl Overlay {
     pub fn validate(&self) -> Result<()> {
         if self.id.is_empty() || self.copy.is_empty() {
