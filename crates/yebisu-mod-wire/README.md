@@ -9,7 +9,8 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
 ## API and receiving order
 
 1. Use `Hello`, `Digests`, `NegotiatedLimits` and `HelloAck` to negotiate protocol
-   `1`, schema `e1`, exact reflection-table digests and required features. Use
+   `1`, schema `e1`, exact reflection-table digests and required features.
+   `ValidationTables::digests` computes those digests from a side's tables. Use
    `decode_hello_ack_bootstrap` only to display the peer's version when incompatible.
 2. Use `FrameHeader::decode` before reserving memory. The nine-byte header is
    `[channel u32 LE][kind u8][len u32 LE]`. DATA=0, CREDIT=1, CLOSE=2. Channel zero

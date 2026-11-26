@@ -426,3 +426,72 @@ fn retained_input_host_set_publishes_without_parent_notify() {
         assert_eq!(after["ref"], before["ref"]);
     }
 }
+
+#[test]
+fn gateway_calls_fail_with_no_operating_connection_through_the_runner_core() {
+    let captures = captures_until(include_str!("fixtures/gateway/main.js"), |c| !c.is_empty());
+    let text = captures[0]["texts"][0].as_str().unwrap().to_owned();
+    // Each call's result is "<call>=<error>", separated by spaces.
+    for call in ["run", "order", "open", "close", "notify"] {
+        let start = text.find(&format!("{call}=")).unwrap();
+        let end = ["run=", "order=", "open=", "close=", "notify="]
+            .iter()
+            .filter_map(|next| text[start + 1..].find(next).map(|i| start + 1 + i))
+            .min()
+            .unwrap_or(text.len());
+        assert!(
+            text[start..end].contains("no_operating_connection"),
+            "{call}: {text}"
+        );
+    }
+    // The old ad-hoc message is gone.
+    assert!(!text.contains("no attached client"), "{text}");
+}
+
+#[test]
+fn inspect_refuses_a_capture_from_runner_tables_that_differ() {
+    use std::{fs, process::Command};
+    let root = tempfile::tempdir().unwrap();
+    let module = root.path().join("home/mods/counter");
+    fs::create_dir_all(&module).unwrap();
+    fs::write(
+        module.join("main.js"),
+        include_str!("fixtures/counter/main.js"),
+    )
+    .unwrap();
+    let output = root.path().join("snapshots");
+    let run = Command::new(env!("CARGO_BIN_EXE_yebisu-modhost"))
+        .args([
+            root.path().join("home").to_str().unwrap(),
+            output.to_str().unwrap(),
+            "1",
+            "counter",
+        ])
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let capture = output.join("counter-0001.frames");
+    inspect_capture(&capture);
+    let identity = capture.with_extension("identity.json");
+    let mut recorded: serde_json::Value =
+        serde_json::from_slice(&fs::read(&identity).unwrap()).unwrap();
+    recorded["digests"]["command"] = serde_json::json!("0".repeat(64));
+    fs::write(&identity, serde_json::to_vec(&recorded).unwrap()).unwrap();
+    let refused = Command::new(env!("CARGO_BIN_EXE_yebisu-modhost"))
+        .arg("inspect")
+        .arg(&capture)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("DigestMismatch"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+}

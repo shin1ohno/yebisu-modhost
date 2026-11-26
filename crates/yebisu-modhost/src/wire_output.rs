@@ -12,7 +12,11 @@ struct Identity {
     session: wire::Session,
     scope: wire::Scope,
     owner_fence: wire::Counter,
+    /// The runner's reflection-table digests, checked in the handshake.
+    digests: wire::Digests,
 }
+use yebisu_mod_renderer as renderer;
+use yebisu_mod_runner as runner;
 use yebisu_mod_wire as wire;
 
 /// The data channel of the offline capture's one transfer (never 0, the control channel).
@@ -122,6 +126,7 @@ pub fn write(
         session: envelope.session.clone(),
         scope: envelope.scope.clone(),
         owner_fence: envelope.owner_fence,
+        digests: tables().digests()?,
     };
     std::fs::write(
         prefix.with_extension("identity.json"),
@@ -204,21 +209,24 @@ pub fn inspect(path: &Path) -> Result<Value> {
     );
     let identity: Identity =
         serde_json::from_slice(&std::fs::read(path.with_extension("identity.json"))?)?;
-    let context = wire::ReceiveContext {
-        session: identity.session,
-        scope: identity.scope,
-        owner_fence: identity.owner_fence,
+    let (context, limits) = handshake(&identity)?;
+    // The renderer core adopts the publication under the negotiated limits.
+    let mut receiver = renderer::CopyReceiver::new(context, limits.clone(), tables())?;
+    let mut host = wire::ResourceLedger::negotiated(&limits)?;
+    let mut app = wire::ResourceLedger::negotiated(&limits)?;
+    let body = receiver
+        .adopt_bytes(
+            &json_bytes,
+            &mut renderer::SharedScopes {
+                host: &mut host,
+                app: &mut app,
+            },
+        )?
+        .clone();
+    let received = Received {
+        scope: receiver.context().scope.clone(),
+        body,
     };
-    let received = wire::decode_publish(
-        &json_bytes,
-        &wire::PublishValidation {
-            tables: &tables(),
-            context: &context,
-            floors: &wire::ReceiptFloors::default(),
-            generations: &wire::GenerationTracker::default(),
-            tombstones: &[],
-        },
-    )?;
     for asset in &received.body.asset_manifests {
         let path = path
             .parent()
@@ -233,4 +241,56 @@ pub fn inspect(path: &Path) -> Result<Value> {
     Ok(
         json!({"file":path,"scope":received.scope,"generation":received.body.pub_rev,"nodes":received.body.views_full.iter().map(|v|v.nodes.len()).sum::<usize>(),"texts":received.body.views_full.iter().flat_map(|v|v.nodes.iter().filter_map(|n|n.text.as_deref())).collect::<Vec<_>>(),"entities":received.body.entities_full.len(),"retained_entities":received.body.entities_full,"state_rev":received.body.wm.state_rev,"list_manifests":received.body.list_manifests,"list_scrolls":received.body.views_full.iter().flat_map(|v|v.nodes.iter().filter(|n|n.list_id.is_some()).map(|n|json!({"list_id":n.list_id,"entity":n.entity}))).collect::<Vec<_>>(),"assets":received.body.asset_manifests.len(),"compressed_bytes":compressed.len(),"json_bytes":json_bytes.len()}),
     )
+}
+
+struct Received {
+    scope: wire::Scope,
+    body: wire::Publish,
+}
+
+/// Hello from this inspector's own tables, answered by the runner identity
+/// the capture recorded: the reflection tables must match exactly, and the
+/// acknowledged limits become the receiving limits.
+fn handshake(identity: &Identity) -> Result<(wire::ReceiveContext, wire::NegotiatedLimits)> {
+    let wire::Scope::Copy { id, incarnation } = &identity.scope else {
+        anyhow::bail!("capture scope is not a copy");
+    };
+    let copy = wire::CopyInfo {
+        id: id.clone(),
+        incarnation: incarnation.clone(),
+        r#mod: wire::ModIdentity {
+            location: wire::ModLocation::HerdrApp,
+            name: id.clone(),
+        },
+    };
+    let client = renderer::ClientHandshake::new(
+        identity.session.client.clone(),
+        identity.session.epoch.clone(),
+        tables().digests()?,
+        vec![],
+        wire::NegotiatedLimits::default(),
+    )?;
+    let ack = runner::answer_hello(
+        client.hello(),
+        &runner::ServeIdentity {
+            serve: wire::ServeVersion {
+                version: env!("CARGO_PKG_VERSION").into(),
+                commit: "offline".into(),
+            },
+            boot: identity.session.boot.clone(),
+            epoch: identity.session.epoch.clone(),
+            digests: identity.digests.clone(),
+            required: vec![],
+            limits: wire::NegotiatedLimits::default(),
+            copies: vec![copy.clone()],
+        },
+    )?;
+    let negotiated = client.accept(&ack)?;
+    let context = negotiated.context(
+        identity.session.host.clone(),
+        identity.session.client.clone(),
+        &copy,
+        identity.owner_fence,
+    )?;
+    Ok((context, negotiated.limits))
 }
