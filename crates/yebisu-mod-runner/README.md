@@ -20,5 +20,13 @@ binary drives it from the mod's host API; this crate does not run JavaScript.
   only when it arrives in the scope that request was sent in; a disconnect
   fails every pending request with `cancelled`.
 
+- `DeviceClient` receives an Action (authenticated, within the negotiated
+  limits) and makes it the current event. The mod's callback must retain a
+  permission explicitly while the Action is current (`retain`, once per
+  permission); `end_action` drops the rest. Spending a `RetainedPermission`
+  moves it into one `DeviceRequest`; an `open_url` value is sent as
+  `normalize_url` output and a non-HTTPS URL is refused locally. Replies
+  settle only the request they name, in its own scope.
+
 `tests/` joins a runner and a `yebisu-mod-renderer` over in-memory control
 frames, from Hello/HelloAck to every gateway outcome.
