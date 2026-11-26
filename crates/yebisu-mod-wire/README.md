@@ -60,6 +60,18 @@ The contract follows option-E v5, appendix A (2026-11-14). The constants in
    application-wide budgets, timeouts and the coordinate cap) and only lowers
    them; zero, non-finite and over-ceiling values are rejected. The transport
    and receiver must apply any smaller negotiated values before accepting work.
+   The initiator checks the acknowledged values with
+   `NegotiatedLimits::check_acknowledged` (no value raised). Build each scope's
+   ledger with `ResourceLedger::negotiated(&limits)`, so reservations stop at the
+   session's value; `ResourceLedger::default()` keeps the A8 ceilings. The wire
+   validators enforce only the ceilings; after them, call the matching
+   `NegotiatedLimits::check_*` at each receiving scope: `check_frame` before a
+   payload is read, `check_control` per control message, `check_publish_begin`
+   before a transfer is reserved, `check_decompressed` while inflating,
+   `check_publish` (nodes, depth, visits, ops, callbacks, entities, strings,
+   lists, assets, coordinates) before adoption, `check_rows_request` /
+   `check_rows_reply`, `check_asset_reply`, and on the runner `check_edit` /
+   `check_action`.
 
 Graph validation covers ordinary children, slots, state styles and ChildViews
 in one graph. It rejects cycles, unreachable nodes and bad indexes, and counts
