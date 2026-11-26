@@ -131,19 +131,16 @@ pub fn module(home: &Path) -> HostModule {
             })
         });
     }
-    for name in [
-        "run",
-        "openOverlay",
-        "closeOverlay",
-        "notify",
-        "playSound",
-        "setAgentOrder",
-    ] {
-        module = module.function(name, move |_| {
-            Err(HostError::new(format!(
-                "{name}: no attached client in offline headless prototype"
-            )))
-        });
-    }
-    module
+    // Gateway calls go through the runner core (A13); sound stays local.
+    module = module.function("playSound", |_| {
+        Err(HostError::new(
+            "playSound: no attached client in offline headless prototype",
+        ))
+    });
+    crate::gateway::install(
+        module,
+        std::rc::Rc::new(std::cell::RefCell::new(
+            crate::gateway::HostGateway::offline(),
+        )),
+    )
 }

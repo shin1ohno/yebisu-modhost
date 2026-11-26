@@ -9743,6 +9743,8 @@ dependencies = [
  "tempfile",
  "tracing-subscriber",
  "usvg",
+ "yebisu-mod-renderer",
+ "yebisu-mod-runner",
  "yebisu-mod-wire",
  "zstd",
 ]

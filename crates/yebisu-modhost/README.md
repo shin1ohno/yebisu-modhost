@@ -57,9 +57,14 @@ The copied Input selection getter returns UTF-16 positions. The adapter converts
 those positions against the same captured text to wire UTF-8 byte offsets,
 rejecting invalid boundaries. Its wire action table is empty, matching the offline
 host's empty command catalog; named ActionCallback operations are rejected until
-an interactive adapter supplies a negotiated action catalog. The new handshake,
-row validation, permission hand-off, gateway and overlay/toast paths are not used
-by this offline writer and remain production work in TODO.md.
+an interactive adapter supplies a negotiated action catalog. The gateway calls (`run`,
+`setAgentOrder`, `openOverlay`, `closeOverlay`, `notify`) go through
+`yebisu-mod-runner`'s gateway client; this offline runner has no operating
+connection, so each fails with A13's explicit `no_operating_connection`.
+`inspect` performs Hello/HelloAck with the reflection-table digests the
+capture recorded (a mismatch is refused) and adopts the publication through
+`yebisu-mod-renderer` under the negotiated limits. Live transport, the
+herdr-app argument mappings and device requests remain in the root TODO.md.
 
 The native headless integration test exercises a real JS timer, `cx.notify`,
 draw and the wire-decoded text from initial state 0 through state 3. It also

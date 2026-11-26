@@ -8,6 +8,7 @@ mod message;
 mod negotiated;
 mod primitive;
 mod snapshot;
+mod tables;
 mod validate;
 pub use codec::*;
 pub use framing::*;

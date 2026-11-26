@@ -19,6 +19,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 usvg = { version = "0.46", default-features = false }
 
 yebisu-mod-wire.workspace = true
+yebisu-mod-renderer = { path = "../yebisu-mod-renderer" }
+yebisu-mod-runner = { path = "../yebisu-mod-runner" }
 zstd = "0.13"
 
 [dev-dependencies]
