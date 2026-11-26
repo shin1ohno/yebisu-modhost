@@ -495,3 +495,37 @@ fn inspect_refuses_a_capture_from_runner_tables_that_differ() {
         String::from_utf8_lossy(&refused.stderr)
     );
 }
+
+#[test]
+fn a_mod_that_fails_after_start_makes_the_runner_exit_nonzero() {
+    use std::{fs, process::Command};
+    let root = tempfile::tempdir().unwrap();
+    for (name, script) in [
+        ("counter", include_str!("fixtures/counter/main.js")),
+        ("broken", include_str!("fixtures/broken/main.js")),
+    ] {
+        let module = root.path().join("home/mods").join(name);
+        fs::create_dir_all(&module).unwrap();
+        fs::write(module.join("main.js"), script).unwrap();
+    }
+    let result = Command::new(env!("CARGO_BIN_EXE_yebisu-modhost"))
+        .args([
+            root.path().join("home").to_str().unwrap(),
+            root.path().join("snapshots").to_str().unwrap(),
+            "2",
+            "counter,broken",
+        ])
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    // The healthy mod still published; the failing one is reported.
+    assert!(root.path().join("snapshots/counter-0001.frames").is_file());
+    assert!(
+        !result.status.success(),
+        "exit status {}: {stderr}",
+        result.status
+    );
+    assert!(stderr.contains("broken-render"), "{stderr}");
+}
