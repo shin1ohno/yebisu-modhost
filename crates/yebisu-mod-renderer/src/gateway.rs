@@ -91,17 +91,20 @@ impl Gateway {
     pub fn set_policy(&mut self, policy: GatewayPolicy) {
         self.policy = policy;
     }
-    /// The names a toast of this copy incarnation shows: the mod's name from
-    /// HelloAck's CopyInfo and the host's name as this device knows it. A
-    /// toast's own `mod_name` / `host_name` are replaced by these.
-    pub fn register_copy(&mut self, copy: &wire::CopyInfo, host_name: String) {
+    /// The names a toast of this copy incarnation shows. Both come from the
+    /// device's own records, never from the runner: `mod_name` from the
+    /// approved, hash-pinned mod record (or a label the user gave it) and
+    /// `host_name` from the host the device verified over SSH. `copy` only
+    /// identifies the incarnation. A toast's own `mod_name` / `host_name`
+    /// are replaced by these.
+    pub fn register_copy(&mut self, copy: &wire::CopyInfo, mod_name: String, host_name: String) {
         self.displays.insert(
             Owner {
                 copy: copy.id.clone(),
                 incarnation: copy.incarnation.clone(),
             },
             ToastNames {
-                mod_name: copy.r#mod.name.clone(),
+                mod_name,
                 host_name,
             },
         );

@@ -41,7 +41,9 @@ code and never draws. It applies the receiving rules that the
   to one per second (`rate_limited`) and three visible (`limit_exceeded`).
   `open_overlay` carries only an ordinary overlay, so a toast always passes
   these limits. A toast shows the mod and host names the device registered
-  for that copy incarnation (`register_copy`), never the payload's.
+  for that copy incarnation (`register_copy`) from its own records (the
+  approved mod record, the SSH-verified host), never the payload's or
+  HelloAck's.
   Authentication runs before the replay cache: only an authenticated request
   is remembered, keyed by the authenticated session, copy scope, owner fence
   and ID, so a resent request gets the remembered reply and does not run

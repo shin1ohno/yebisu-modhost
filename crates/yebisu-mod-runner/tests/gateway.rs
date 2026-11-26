@@ -34,8 +34,9 @@ impl End {
         );
         let mut gateway = Gateway::new(policy());
         gateway.set_operating(true);
-        gateway.register_copy(&copy("a", 3), "pro-dev".into());
-        gateway.register_copy(&copy("b", 4), "pro-dev".into());
+        // Names from the device's approval records, not from HelloAck.
+        gateway.register_copy(&copy("a", 3), "Git Graph".into(), "pro-dev".into());
+        gateway.register_copy(&copy("b", 4), "Reviewer".into(), "pro-dev".into());
         Self { pair, gateway }
     }
     /// Runner request -> frames -> renderer gateway -> frames -> runner reply.
@@ -480,7 +481,8 @@ fn a_toast_shows_the_device_names_for_its_copy_not_the_payload() {
     };
     let names = shown.toast.unwrap();
     assert_eq!(names.message, "Session expired, sign in");
-    assert_eq!(names.mod_name, "a");
+    // HelloAck named this copy's mod "a"; the device's record says otherwise.
+    assert_eq!(names.mod_name, "Git Graph");
     assert_eq!(names.host_name, "pro-dev");
     // A copy the device has no names for cannot show a toast.
     let mut unnamed = Gateway::new(policy());
