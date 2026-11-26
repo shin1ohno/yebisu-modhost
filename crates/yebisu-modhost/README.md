@@ -74,6 +74,9 @@ positions, Input-only value/config/selection updates and subscription-only
 changes received without a parent rebuild, and an empty VirtualList received
 with a list manifest keyed by its view generation.
 A missing mod must fail before starting the application.
+A mod that fails after start is printed to stderr at once and makes the runner
+exit non-zero when its duration ends, on macOS too: there `quit()` ends the
+process inside the run loop, so the exit status is decided before quitting.
 
 The Input and VirtualList tests read publications as they arrive and end on the
 publication they wait for; the runner's duration is only an upper bound. Their

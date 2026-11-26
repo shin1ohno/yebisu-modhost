@@ -173,7 +173,7 @@ fn main() -> Result<()> {
                                 }
                                 Ok(Ok(false)) => {}
                                 other => {
-                                    errors.borrow_mut().push(format!("{name}: {other:?}"));
+                                    report(&errors, format!("{name}: {other:?}"));
                                     break;
                                 }
                             }
@@ -183,13 +183,20 @@ fn main() -> Result<()> {
                     Ok(())
                 })();
                 if let Err(error) = result {
-                    errors.borrow_mut().push(format!("{name}: {error:#}"));
+                    report(&errors, format!("{name}: {error:#}"));
                 }
             }
             cx.spawn(async move |cx| {
                 cx.background_executor()
                     .timer(Duration::from_secs(seconds))
                     .await;
+                // On macOS quit() ends the process inside the run loop
+                // ([NSApp terminate:]), so `run` never returns to the check
+                // below. Decide the exit status here instead.
+                if !errors.borrow().is_empty() {
+                    eprintln!("render failures: {:?}", errors.borrow());
+                    std::process::exit(1);
+                }
                 cx.update(|cx| cx.quit());
             })
             .detach();
@@ -200,6 +207,12 @@ fn main() -> Result<()> {
         failures.borrow()
     );
     Ok(())
+}
+
+/// Record a mod failure and show it at once, whatever the platform does on exit.
+fn report(errors: &RefCell<Vec<String>>, failure: String) {
+    eprintln!("mod failure: {failure}");
+    errors.borrow_mut().push(failure);
 }
 
 fn random_id() -> Result<String> {
