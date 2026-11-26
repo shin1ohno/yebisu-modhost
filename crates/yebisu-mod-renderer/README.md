@@ -28,5 +28,19 @@ code and never draws. It applies the receiving rules that the
   a copy that no longer has the list or asset ends those requests and returns
   their reservations.
 
+- `Gateway` answers every `GatewayRequest` with one `GatewayReply` and yields
+  a `GatewayEffect` only for an accepted request. In order: an envelope from
+  another session, copy incarnation or owner fence, or a body target that
+  does not match the authenticated copy, is `stale_target`; a paused or
+  unloaded copy is `cancelled`; a connection that is not the operating one
+  (including background execution) is `no_operating_connection`; a stale
+  Policy revision, a `run` command outside the allowlist or a disallowed
+  `set_agent_order` is `policy_denied`. Overlays and toasts belong to the
+  copy incarnation whose envelope opened them; naming another copy, reusing an
+  open ID or closing another copy's overlay is `not_owned`. Toasts are limited
+  to one per second (`rate_limited`) and three visible (`limit_exceeded`).
+  A resent request (same copy scope and ID) gets the remembered reply and
+  does not run again.
+
 Protocol 1 enables no compression format implicitly; `Uncompressed` is the
 only `Inflate` provided here.

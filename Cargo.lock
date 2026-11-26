@@ -9709,6 +9709,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "yebisu-mod-runner"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "yebisu-mod-renderer",
+ "yebisu-mod-wire",
+]
+
+[[package]]
 name = "yebisu-mod-wire"
 version = "0.1.0"
 dependencies = [
