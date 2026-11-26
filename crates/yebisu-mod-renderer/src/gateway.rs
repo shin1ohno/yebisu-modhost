@@ -24,7 +24,7 @@ pub enum GatewayEffect {
     ShowToast(wire::Overlay),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Owner {
     copy: String,
     incarnation: wire::Id128,
@@ -42,8 +42,25 @@ pub struct Gateway {
     toasts: VecDeque<String>,
     last_toast_ms: Option<u64>,
     stopped: BTreeSet<(String, wire::Id128)>,
-    /// Keyed by the requesting scope and request ID: IDs are only unique per copy.
-    replies: VecDeque<((wire::Scope, String), wire::GatewayReply)>,
+    /// Toast display names per copy incarnation, from the device's own records.
+    displays: BTreeMap<Owner, ToastNames>,
+    /// Replies to authenticated requests only, keyed by the authenticated
+    /// identity and request ID: IDs are only unique per copy.
+    replies: VecDeque<(ReplyKey, wire::GatewayReply)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ReplyKey {
+    session: wire::Session,
+    scope: wire::Scope,
+    owner_fence: wire::Counter,
+    request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ToastNames {
+    mod_name: String,
+    host_name: String,
 }
 
 fn failed(request_id: &str, reason: GatewayFailure) -> wire::GatewayReply {
@@ -62,6 +79,7 @@ impl Gateway {
             toasts: VecDeque::new(),
             last_toast_ms: None,
             stopped: BTreeSet::new(),
+            displays: BTreeMap::new(),
             replies: VecDeque::new(),
         }
     }
@@ -72,6 +90,21 @@ impl Gateway {
     }
     pub fn set_policy(&mut self, policy: GatewayPolicy) {
         self.policy = policy;
+    }
+    /// The names a toast of this copy incarnation shows: the mod's name from
+    /// HelloAck's CopyInfo and the host's name as this device knows it. A
+    /// toast's own `mod_name` / `host_name` are replaced by these.
+    pub fn register_copy(&mut self, copy: &wire::CopyInfo, host_name: String) {
+        self.displays.insert(
+            Owner {
+                copy: copy.id.clone(),
+                incarnation: copy.incarnation.clone(),
+            },
+            ToastNames {
+                mod_name: copy.r#mod.name.clone(),
+                host_name,
+            },
+        );
     }
     /// After Pause or Unload, the copy's later requests are cancelled and its
     /// overlays and toasts close.
@@ -91,6 +124,11 @@ impl Gateway {
             self.overlays.remove(id);
             self.toasts.retain(|t| t != id);
         }
+        // A resent request of the stopped copy is decided again: cancelled.
+        self.replies.retain(|(key, _)| {
+            !matches!(&key.scope, wire::Scope::Copy { id, incarnation: i }
+                if *id == owner.copy && *i == owner.incarnation)
+        });
         closed
     }
     /// The user or a timer dismissed a toast.
@@ -111,11 +149,21 @@ impl Gateway {
         now_ms: u64,
     ) -> (wire::GatewayReply, Option<GatewayEffect>) {
         let id = request.body.request_id.clone();
-        let key = (request.scope.clone(), id.clone());
+        // Authenticate before the replay cache, so an unauthenticated message
+        // can neither read a remembered reply nor fill the cache.
+        if let Err(reason) = authenticate(request, context) {
+            return (failed(&id, reason), None);
+        }
+        let key = ReplyKey {
+            session: context.session.clone(),
+            scope: context.scope.clone(),
+            owner_fence: context.owner_fence,
+            request_id: id.clone(),
+        };
         if let Some((_, reply)) = self.replies.iter().find(|(k, _)| *k == key) {
             return (reply.clone(), None);
         }
-        let (reply, effect) = match self.decide(request, context, now_ms) {
+        let (reply, effect) = match self.decide(request, now_ms) {
             Ok(effect) => (
                 wire::GatewayReply {
                     request_id: id.clone(),
@@ -132,23 +180,13 @@ impl Gateway {
         (reply, effect)
     }
 
+    /// Called only after `authenticate`.
     fn decide(
         &mut self,
         request: &wire::Envelope<wire::GatewayRequest>,
-        context: &wire::ReceiveContext,
         now_ms: u64,
     ) -> Result<GatewayEffect, GatewayFailure> {
-        // A message from an older incarnation, session or owner is stale; one
-        // that is malformed is invalid.
-        match context.validate(request) {
-            Ok(()) => {}
-            Err(wire::Error::Stale(_)) => return Err(GatewayFailure::StaleTarget),
-            Err(_) => return Err(GatewayFailure::InvalidRequest),
-        }
         let body = &request.body;
-        body.target
-            .validate_against(context)
-            .map_err(|_| GatewayFailure::StaleTarget)?;
         let owner = Owner {
             copy: body.target.copy.clone(),
             incarnation: body.target.incarnation.clone(),
@@ -184,6 +222,8 @@ impl Gateway {
                 })
             }
             GatewayOperation::OpenOverlay { overlay } => {
+                // A toast goes only through notify and its limits: the wire
+                // validation in `authenticate` already refused a toast here.
                 self.claim(overlay, &owner)?;
                 self.overlays.insert(overlay.id.clone(), owner);
                 Ok(GatewayEffect::OpenOverlay(overlay.clone()))
@@ -210,10 +250,25 @@ impl Gateway {
                 if self.toasts.len() >= limits::TOASTS_VISIBLE {
                     return Err(GatewayFailure::LimitExceeded);
                 }
+                // Show the device's names for this copy, not the payload's.
+                let names = self
+                    .displays
+                    .get(&owner)
+                    .ok_or(GatewayFailure::InvalidRequest)?;
+                let mut shown = overlay.clone();
+                shown.toast = Some(wire::ToastContent {
+                    message: overlay
+                        .toast
+                        .as_ref()
+                        .map(|t| t.message.clone())
+                        .ok_or(GatewayFailure::InvalidRequest)?,
+                    mod_name: names.mod_name.clone(),
+                    host_name: names.host_name.clone(),
+                });
                 self.last_toast_ms = Some(now_ms);
                 self.toasts.push_back(overlay.id.clone());
                 self.overlays.insert(overlay.id.clone(), owner);
-                Ok(GatewayEffect::ShowToast(overlay.clone()))
+                Ok(GatewayEffect::ShowToast(shown))
             }
         }
     }
@@ -228,6 +283,24 @@ impl Gateway {
         }
         Ok(())
     }
+}
+
+/// A message from an older incarnation, session or owner, or a body target
+/// that is not the authenticated copy, is stale; a malformed one is invalid.
+fn authenticate(
+    request: &wire::Envelope<wire::GatewayRequest>,
+    context: &wire::ReceiveContext,
+) -> Result<(), GatewayFailure> {
+    match context.validate(request) {
+        Ok(()) => {}
+        Err(wire::Error::Stale(_)) => return Err(GatewayFailure::StaleTarget),
+        Err(_) => return Err(GatewayFailure::InvalidRequest),
+    }
+    request
+        .body
+        .target
+        .validate_against(context)
+        .map_err(|_| GatewayFailure::StaleTarget)
 }
 
 fn toast_rate() -> u64 {

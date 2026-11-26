@@ -1368,7 +1368,12 @@ impl GatewayRequest {
             GatewayOperation::Run { command, .. } if command.is_empty() => {
                 return Err(Error::Invalid("gateway command"));
             }
-            GatewayOperation::OpenOverlay { overlay } => overlay.validate()?,
+            GatewayOperation::OpenOverlay { overlay } => {
+                overlay.validate()?;
+                if overlay.kind != OverlayKind::Overlay {
+                    return Err(Error::Invalid("open_overlay requires overlay"));
+                }
+            }
             GatewayOperation::Notify { overlay } => {
                 overlay.validate()?;
                 if overlay.kind != OverlayKind::Toast {

@@ -34,6 +34,8 @@ impl End {
         );
         let mut gateway = Gateway::new(policy());
         gateway.set_operating(true);
+        gateway.register_copy(&copy("a", 3), "pro-dev".into());
+        gateway.register_copy(&copy("b", 4), "pro-dev".into());
         Self { pair, gateway }
     }
     /// Runner request -> frames -> renderer gateway -> frames -> runner reply.
@@ -395,4 +397,105 @@ fn equal_request_ids_from_different_copies_are_different_requests() {
     let (result, effect) = end.call(&mut client_b, &mut link_b, &b, run("app.quit"), 0);
     assert_eq!(failure(result), GatewayFailure::PolicyDenied);
     assert_eq!(effect, None);
+}
+
+#[test]
+fn unauthenticated_requests_can_neither_read_nor_fill_the_replay_cache() {
+    let mut end = End::new();
+    let a = copy("a", 3);
+    let mut link = end.pair.link(&a);
+    let mut client = GatewayClient::new(Counter(5));
+    let GatewaySend::Sent { envelope, .. } =
+        client.request(Some(&mut link), run("pane.split")).unwrap()
+    else {
+        panic!("not sent")
+    };
+    let context = end.pair.renderer_context(&a);
+    // A forged copy of the request from an older owner fence arrives first.
+    let mut forged = envelope.clone();
+    forged.owner_fence = Counter(0);
+    let (reply, _) = end.gateway.handle(&forged, &context, 0);
+    assert_eq!(failure(reply.result), GatewayFailure::StaleTarget);
+    // The authentic request still runs.
+    let (reply, effect) = end.gateway.handle(&envelope, &context, 0);
+    assert_eq!(reply.result, GatewayResult::Ok {});
+    assert!(effect.is_some());
+    // And the forged one does not receive the remembered Ok.
+    let (reply, effect) = end.gateway.handle(&forged, &context, 0);
+    assert_eq!(failure(reply.result), GatewayFailure::StaleTarget);
+    assert_eq!(effect, None);
+    // After a stop, a resent request is decided again, not replayed.
+    end.gateway.stop_copy("a", &a.incarnation);
+    let (reply, effect) = end.gateway.handle(&envelope, &context, 0);
+    assert_eq!(failure(reply.result), GatewayFailure::Cancelled);
+    assert_eq!(effect, None);
+}
+
+#[test]
+fn open_overlay_cannot_show_a_toast_past_the_toast_limits() {
+    let mut end = End::new();
+    let a = copy("a", 3);
+    let mut link = end.pair.link(&a);
+    let mut client = GatewayClient::new(Counter(5));
+    let toast = GatewayOperation::OpenOverlay {
+        overlay: overlay(OverlayKind::Toast, "t", &a),
+    };
+    // The runner refuses to send it...
+    assert_eq!(
+        client.request(Some(&mut link), toast.clone()).unwrap(),
+        GatewaySend::Failed(GatewayFailure::InvalidRequest)
+    );
+    // ...and the renderer refuses it from a runner that does not.
+    let request = wire::GatewayRequest {
+        request_id: "forged".into(),
+        target: link.target().unwrap(),
+        policy_rev: Counter(5),
+        operation: toast,
+    };
+    let envelope = link.envelope(request);
+    let (reply, effect) = end
+        .gateway
+        .handle(&envelope, &end.pair.renderer_context(&a), 0);
+    assert_eq!(failure(reply.result), GatewayFailure::InvalidRequest);
+    assert_eq!(effect, None);
+}
+
+#[test]
+fn a_toast_shows_the_device_names_for_its_copy_not_the_payload() {
+    let mut end = End::new();
+    let a = copy("a", 3);
+    let mut link = end.pair.link(&a);
+    let mut client = GatewayClient::new(Counter(5));
+    let mut spoof = overlay(OverlayKind::Toast, "t", &a);
+    spoof.toast = Some(wire::ToastContent {
+        message: "Session expired, sign in".into(),
+        mod_name: "System".into(),
+        host_name: "Bank".into(),
+    });
+    let notify = GatewayOperation::Notify { overlay: spoof };
+    let (result, effect) = end.call(&mut client, &mut link, &a, notify, 0);
+    assert_eq!(result, GatewayResult::Ok {});
+    let Some(GatewayEffect::ShowToast(shown)) = effect else {
+        panic!("no toast")
+    };
+    let names = shown.toast.unwrap();
+    assert_eq!(names.message, "Session expired, sign in");
+    assert_eq!(names.mod_name, "a");
+    assert_eq!(names.host_name, "pro-dev");
+    // A copy the device has no names for cannot show a toast.
+    let mut unnamed = Gateway::new(policy());
+    unnamed.set_operating(true);
+    let GatewaySend::Sent { envelope, .. } = client
+        .request(
+            Some(&mut link),
+            GatewayOperation::Notify {
+                overlay: overlay(OverlayKind::Toast, "t2", &a),
+            },
+        )
+        .unwrap()
+    else {
+        panic!("not sent")
+    };
+    let (reply, _) = unnamed.handle(&envelope, &end.pair.renderer_context(&a), 0);
+    assert_eq!(failure(reply.result), GatewayFailure::InvalidRequest);
 }

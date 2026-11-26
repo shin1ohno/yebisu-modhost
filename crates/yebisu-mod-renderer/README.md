@@ -39,8 +39,14 @@ code and never draws. It applies the receiving rules that the
   copy incarnation whose envelope opened them; naming another copy, reusing an
   open ID or closing another copy's overlay is `not_owned`. Toasts are limited
   to one per second (`rate_limited`) and three visible (`limit_exceeded`).
-  A resent request (same copy scope and ID) gets the remembered reply and
-  does not run again.
+  `open_overlay` carries only an ordinary overlay, so a toast always passes
+  these limits. A toast shows the mod and host names the device registered
+  for that copy incarnation (`register_copy`), never the payload's.
+  Authentication runs before the replay cache: only an authenticated request
+  is remembered, keyed by the authenticated session, copy scope, owner fence
+  and ID, so a resent request gets the remembered reply and does not run
+  again, a forged one can neither read nor fill the cache, and a stopped
+  copy's remembered replies are dropped.
 
 Protocol 1 enables no compression format implicitly; `Uncompressed` is the
 only `Inflate` provided here.
